@@ -3,19 +3,19 @@
 #
 # 动作：
 #   双击运行 / ./agents-green.command                   交互菜单
-#   ./agents-green.command install [--force] [all|claude|codex|pi]      安装（默认全部）
+#   ./agents-green.command install [--force] [all|claude|codex|pi|codebuddy]   安装（默认全部）
 #   ./agents-green.command setup                        迁移后修复 / 重建命令入口
-#   ./agents-green.command update [1|2|3|4|all|check|runtime]   版本更新
-#   ./agents-green.command uninstall [--dry-run|--yes|--no-backup] [all|claude|codex|pi]
+#   ./agents-green.command update [1-5|all|check|runtime]   版本更新
+#   ./agents-green.command uninstall [--dry-run|--yes|--no-backup] [all|claude|codex|pi|codebuddy]
 #       卸载全部只清理脚本生成的目录与文件，保留 AGENTS_HOME 本身和其他文件
 #       默认备份写到 AGENTS_HOME/.backups，不再写到 HOME
 #
 # 环境变量：
 #   AGENTS_HOME   安装根目录（默认 ~/.agents；可设为任意可写目录的绝对路径）
-#   NODE_VER / NPM_VER / CLAUDE_VER / CODEX_VER / PI_VER   指定版本，默认自动取最新
+#   NODE_VER / NPM_VER / CLAUDE_VER / CODEX_VER / PI_VER / CODEBUDDY_VER   指定版本，默认自动取最新
 #   SKIP_AGENTS=1 install 只装 Node/npm 运行时
 #   SKIP_LINKS=1  install 不建 /opt/homebrew/bin 入口
-#   NO_NODE_LINK=1 setup 不暴露 node/npm/npx（三个 CLI 仍可用自带 Node）
+#   NO_NODE_LINK=1 setup 不暴露 node/npm/npx（四个 CLI 仍可用自带 Node）
 #   AGENTS_BIN_DIR  指定入口目录（默认自动挑 /opt/homebrew/bin 等，仅测试用）
 #
 # 只写 AGENTS_HOME 内部与入口目录（/opt/homebrew/bin、/usr/local/bin 或 ~/.local/bin），不碰系统 node/npm。
@@ -197,13 +197,13 @@ is_own_symlink_target() {
   return 1
 }
 
-# 六个入口的唯一模板来源；install 与 setup 共用，避免两份代码漂移
-# $1=bin 目录  $2=是否暴露 node/npm/npx（1/0）  $3+=要写入入口的组件（空 = claude codex pi 全部）
+# 七个入口的唯一模板来源；install 与 setup 共用，避免两份代码漂移
+# $1=bin 目录  $2=是否暴露 node/npm/npx（1/0）  $3+=要写入入口的组件（空 = claude codex pi codebuddy 全部）
 # 返回非 0 表示有入口没写成功，调用方必须检查
 write_entries() {
   local bin="$1" with_node="$2" existing f tgt bak components
   shift 2
-  components="${*:-claude codex pi}"
+  components="${*:-claude codex pi codebuddy}"
 
   # 清场：只删自己写过的入口；外来的一律备份后让位
   for f in $components; do
@@ -233,6 +233,10 @@ write_entries() {
       pi)
         printf 'exec "%s" "%s/pi/node_modules/.bin/pi" "$@"\n' "$NODE" "$AGENTS_HOME" \
           | write_shim "$bin/pi" || return 1 ;;
+      codebuddy)
+        # 它自带自动更新，会绕过本脚本的更新流程；这里固定关掉，版本统一由「更新」管
+        printf 'export DISABLE_AUTOUPDATER=1\nexec "%s" "%s/codebuddy/node_modules/.bin/codebuddy" "$@"\n' \
+          "$NODE" "$AGENTS_HOME" | write_shim "$bin/codebuddy" || return 1 ;;
       *)
         warn "未知组件：$f，跳过" ;;
     esac
@@ -240,7 +244,7 @@ write_entries() {
   ok "已写入入口：$components"
 
   if [ "$with_node" != "1" ]; then
-    warn "按调用方要求跳过 node / npm / npx（三个 CLI 仍用自带 Node）"
+    warn "按调用方要求跳过 node / npm / npx（四个 CLI 仍用自带 Node）"
     return 0
   fi
 
@@ -312,6 +316,7 @@ verify_commands() {
         claude) v="$("$AGENTS_HOME/claude/node_modules/.bin/claude" --version 2>&1)" || rc=$? ;;
         codex)  v="$("$NODE" "$AGENTS_HOME/codex/node_modules/.bin/codex" --version 2>&1)" || rc=$? ;;
         pi)     v="$("$NODE" "$AGENTS_HOME/pi/node_modules/.bin/pi" --version 2>&1)" || rc=$? ;;
+        codebuddy) v="$("$NODE" "$AGENTS_HOME/codebuddy/node_modules/.bin/codebuddy" --version 2>&1)" || rc=$? ;;
         *)      continue ;;
       esac
     fi
@@ -334,6 +339,7 @@ refresh_after_install() {
       claude) CUR_CLAUDE="$(current_version claude)"; LATEST_CLAUDE="$CUR_CLAUDE" ;;
       codex)  CUR_CODEX="$(current_version codex)";   LATEST_CODEX="$CUR_CODEX" ;;
       pi)     CUR_PI="$(current_version pi)";         LATEST_PI="$CUR_PI" ;;
+      codebuddy) CUR_CODEBUDDY="$(current_version codebuddy)"; LATEST_CODEBUDDY="$CUR_CODEBUDDY" ;;
     esac
   done
   CUR_NODE="$([ -x "$NODE" ] && "$NODE" -v 2>/dev/null)"
@@ -342,7 +348,7 @@ refresh_after_install() {
   STATUS_FRESH=1
 }
 
-# 菜单与更新界面共用的状态数据：填 CUR_* / LATEST_* 六个全局变量
+# 菜单与更新界面共用的状态数据：填 CUR_* / LATEST_* 八个全局变量
 # 运行时可用时并行查最新版（约 1-2 秒）；否则离线降级，LATEST_* 置空
 refresh_status() {
   if [ -x "$NODE" ] && [ -f "$NPM_CLI" ]; then
@@ -356,7 +362,8 @@ refresh_status() {
     CUR_CLAUDE="$(current_version claude)"
     CUR_CODEX="$(current_version codex)"
     CUR_PI="$(current_version pi)"
-    LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_PI=""
+    CUR_CODEBUDDY="$(current_version codebuddy)"
+    LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_PI=""; LATEST_CODEBUDDY=""
   fi
   CUR_NODE="$([ -x "$NODE" ] && "$NODE" -v 2>/dev/null)"
   CUR_NODE="${CUR_NODE#v}"
@@ -427,6 +434,7 @@ _install_action() {
   local key="${1:-all}"
   local NODE_VER="${NODE_VER:-}" NPM_VER="${NPM_VER:-}"
   local CLAUDE_VER="${CLAUDE_VER:-latest}" CODEX_VER="${CODEX_VER:-latest}" PI_VER="${PI_VER:-latest}"
+  local CODEBUDDY_VER="${CODEBUDDY_VER:-latest}"
   local SKIP_AGENTS="${SKIP_AGENTS:-0}" SKIP_LINKS="${SKIP_LINKS:-0}"
   local BIN_DIR="" fail=0 v check_list="" label
   set_home_paths
@@ -435,8 +443,8 @@ _install_action() {
   export PATH="$(dirname "$NODE"):$PATH"
 
   case "$key" in
-    all|claude|codex|pi) ;;
-    *) bad "未知组件：${key}（可用 all / claude / codex / pi）"; return 1 ;;
+    all|claude|codex|pi|codebuddy) ;;
+    *) bad "未知组件：${key}（可用 all / claude / codex / pi / codebuddy）"; return 1 ;;
   esac
 
   step "检查环境"
@@ -450,10 +458,10 @@ _install_action() {
 
   if [ "$key" = "all" ]; then
     if [ -d "$AGENTS_HOME/claude/node_modules" ] || [ -d "$AGENTS_HOME/codex/node_modules" ] \
-      || [ -d "$AGENTS_HOME/pi/node_modules" ]; then
+      || [ -d "$AGENTS_HOME/pi/node_modules" ] || [ -d "$AGENTS_HOME/codebuddy/node_modules" ]; then
       if [ "$FORCE" != "1" ]; then
         if [ "$INTERACTIVE" = "1" ]; then
-          confirm_overwrite "三个 CLI" || return 1
+          confirm_overwrite "四个 CLI" || return 1
           FORCE=1; CONFIRMED=1
         else
           warn "检测到已有安装。如需覆盖请加 --force，或直接 setup 修复入口"
@@ -490,7 +498,7 @@ _install_action() {
 
   step "创建目录结构"
   if [ "$key" = "all" ]; then
-    mkdir -p "$AGENTS_HOME"/{claude,codex,pi}
+    mkdir -p "$AGENTS_HOME"/{claude,codex,pi,codebuddy}
   else
     mkdir -p "$AGENTS_HOME/$key"
   fi
@@ -498,7 +506,7 @@ _install_action() {
   mkdir -p "$AGENTS_HOME/.dependencies/.npm-cache"
   TMP="$AGENTS_HOME/.install-tmp"
   rm -rf "$TMP"; mkdir -p "$TMP"
-  ok "$AGENTS_HOME/{claude,codex,pi,.dependencies}"
+  ok "$AGENTS_HOME/{claude,codex,pi,codebuddy,.dependencies}"
 
   local refresh_runtime=0
   # 菜单里确认覆盖不重下运行时；只有命令行显式 --force all 才刷新 Node/npm
@@ -542,17 +550,19 @@ _install_action() {
 
   if [ "$key" = "all" ]; then
     if [ "$SKIP_AGENTS" = "1" ]; then
-      step "跳过三个 AI（SKIP_AGENTS=1）"
+      step "跳过四个 AI（SKIP_AGENTS=1）"
     else
-      step "安装三个 AI（下载约 850 MB，请耐心等待）"
+      step "安装四个 AI（下载约 950 MB，请耐心等待）"
       # allowScripts 必须写：claude 的原生二进制靠 postinstall 下载
       write_pkg_json claude agents-claude-code '{ "@anthropic-ai/claude-code": true }'
       write_pkg_json codex  agents-codex-cli  ''
       write_pkg_json pi     agents-pi         '{ "koffi": true, "protobufjs": true, "@google/genai": true }'
+      write_pkg_json codebuddy agents-codebuddy-cli ''
       install_agent claude @anthropic-ai/claude-code "$CLAUDE_VER" "Claude Code" || { bad "Claude Code 安装失败"; return 1; }
       install_agent codex  @openai/codex            "$CODEX_VER"  "Codex CLI"   || { bad "Codex CLI 安装失败"; return 1; }
       install_agent pi     @earendil-works/pi-coding-agent "$PI_VER" "Pi"        || { bad "Pi 安装失败"; return 1; }
-      check_list="claude codex pi"
+      install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy Code" || { bad "CodeBuddy Code 安装失败"; return 1; }
+      check_list="claude codex pi codebuddy"
     fi
   else
     label="$(display_name "$key")"
@@ -573,6 +583,10 @@ _install_action() {
         pi)
           write_pkg_json pi agents-pi '{ "koffi": true, "protobufjs": true, "@google/genai": true }'
           install_agent pi @earendil-works/pi-coding-agent "$PI_VER" "Pi" || { bad "Pi 安装失败"; return 1; }
+          ;;
+        codebuddy)
+          write_pkg_json codebuddy agents-codebuddy-cli ''
+          install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy Code" || { bad "CodeBuddy Code 安装失败"; return 1; }
           ;;
       esac
       check_list="$key"
@@ -604,8 +618,8 @@ _install_action() {
   if [ "$fail" -eq 0 ]; then
     printf "%s%s安装完成。%s\n" "$C_GREEN" "$C_BOLD" "$C_RESET"
     printf "\n%s下一步：%s\n" "$C_BOLD" "$C_RESET"
-    printf "  · 新开终端跑 claude / codex / pi（首次会引导登录）\n"
-    printf "  · 登录态存在 ~/.claude、~/.codex、~/.pi，不在 %s 内\n" "$AGENTS_HOME"
+    printf "  · 新开终端跑 claude / codex / pi / codebuddy（首次会引导登录）\n"
+    printf "  · 登录态存在 ~/.claude、~/.codex、~/.pi、~/.codebuddy，不在 %s 内\n" "$AGENTS_HOME"
     if [ "$ACTION" = "menu" ]; then
       printf "  · 更新版本选「2 更新」，修入口选「4 设置环境」\n"
     else
@@ -637,7 +651,7 @@ check_arch() {
 
   local present=0 c
   PRESENT_COMPONENTS=""
-  for c in claude codex pi; do
+  for c in claude codex pi codebuddy; do
     if [ -d "$AGENTS_HOME/$c/node_modules" ]; then
       present=$((present + 1))
       PRESENT_COMPONENTS="${PRESENT_COMPONENTS} ${c}"
@@ -647,10 +661,10 @@ check_arch() {
   done
   PRESENT_COMPONENTS="${PRESENT_COMPONENTS# }"
   if [ "$present" -eq 0 ]; then
-    bad "claude / codex / pi 一个都没装，无法继续"
+    bad "claude / codex / pi / codebuddy 一个都没装，无法继续"
     return 1
   fi
-  ok "已安装 ${present}/3 个组件"
+  ok "已安装 ${present}/4 个组件"
   return 0
 }
 
@@ -729,8 +743,8 @@ setup_action() {
   if [ "$bin_dir" = "$HOME/.local/bin" ]; then
     warn "该目录通常不被 Magpie 等 GUI 应用扫描"
     warn "若已装 Homebrew 或愿意用 sudo，改放系统目录更稳："
-    printf "     sudo mkdir -p /usr/local/bin && sudo cp %s/claude %s/codex %s/pi /usr/local/bin/\n" \
-      "$bin_dir" "$bin_dir" "$bin_dir"
+    printf "     sudo mkdir -p /usr/local/bin && sudo cp %s/claude %s/codex %s/pi %s/codebuddy /usr/local/bin/\n" \
+      "$bin_dir" "$bin_dir" "$bin_dir" "$bin_dir"
   fi
 
   printf "\n"
@@ -743,7 +757,7 @@ setup_action() {
 
   printf "\n%s下一步：%s\n" "$C_BOLD" "$C_RESET"
   printf "  1. 新开终端窗口，敲 %s 即可\n" "$PRESENT_COMPONENTS"
-  printf "  2. 首次运行会引导登录，登录态存在 ~/.claude、~/.codex、~/.pi（不在本目录内）\n"
+  printf "  2. 首次运行会引导登录，登录态存在 ~/.claude、~/.codex、~/.pi、~/.codebuddy（不在本目录内）\n"
   printf "  3. 若用 Magpie，退出并重开一次，Agents 面板才会重新扫描\n"
   printf "  4. 更新版本：菜单选「2 更新」，或运行 ./agents-green.command update\n"
   return "$vfail"
@@ -753,8 +767,9 @@ setup_action() {
 PKG_CLAUDE="@anthropic-ai/claude-code"
 PKG_CODEX="@openai/codex"
 PKG_PI="@earendil-works/pi-coding-agent"
-CUR_CLAUDE=""; CUR_CODEX=""; CUR_PI=""
-LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_PI=""
+PKG_CODEBUDDY="@tencent-ai/codebuddy-code"
+CUR_CLAUDE=""; CUR_CODEX=""; CUR_PI=""; CUR_CODEBUDDY=""
+LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_PI=""; LATEST_CODEBUDDY=""
 CUR_NODE=""; CUR_NPM=""; LATEST_NODE=""; LATEST_NPM=""
 
 pkg_of() {
@@ -762,6 +777,7 @@ pkg_of() {
     claude) printf '%s' "$PKG_CLAUDE" ;;
     codex)  printf '%s' "$PKG_CODEX" ;;
     pi)     printf '%s' "$PKG_PI" ;;
+    codebuddy) printf '%s' "$PKG_CODEBUDDY" ;;
   esac
 }
 
@@ -770,6 +786,7 @@ display_name() {
     claude) printf 'Claude Code' ;;
     codex)  printf 'Codex CLI' ;;
     pi)     printf 'Pi' ;;
+    codebuddy) printf 'CodeBuddy Code' ;;
   esac
 }
 
@@ -779,6 +796,7 @@ current_version() {
     claude) [ -x "$dir" ] && "$dir" --version 2>/dev/null | head -1 | sed 's/ (Claude Code)$//' ;;
     codex)  [ -x "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 | sed 's/^codex-cli //' ;;
     pi)     [ -f "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 ;;
+    codebuddy) [ -f "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 ;;
   esac
 }
 
@@ -793,13 +811,16 @@ check_all() {
   CUR_CLAUDE="$(current_version claude)"
   CUR_CODEX="$(current_version codex)"
   CUR_PI="$(current_version pi)"
+  CUR_CODEBUDDY="$(current_version codebuddy)"
   ( fetch_latest claude > "$td/c" 2>/dev/null ) &
   ( fetch_latest codex  > "$td/x" 2>/dev/null ) &
   ( fetch_latest pi     > "$td/p" 2>/dev/null ) &
+  ( fetch_latest codebuddy > "$td/b" 2>/dev/null ) &
   wait
   LATEST_CLAUDE="$(head -1 "$td/c" 2>/dev/null)"
   LATEST_CODEX="$(head -1 "$td/x" 2>/dev/null)"
   LATEST_PI="$(head -1 "$td/p" 2>/dev/null)"
+  LATEST_CODEBUDDY="$(head -1 "$td/b" 2>/dev/null)"
   rm -rf "$td"
 }
 
@@ -829,6 +850,7 @@ print_status() {
   status_line "Claude Code" "$CUR_CLAUDE" "$LATEST_CLAUDE"
   status_line "Codex CLI"   "$CUR_CODEX"  "$LATEST_CODEX"
   status_line "Pi"          "$CUR_PI"     "$LATEST_PI"
+  status_line "CodeBuddy Code" "$CUR_CODEBUDDY" "$LATEST_CODEBUDDY"
 }
 
 draw_update_menu() {
@@ -841,15 +863,16 @@ draw_update_menu() {
   printf "  %s1%s  更新 Claude Code\n" "$C_BOLD" "$C_RESET"
   printf "  %s2%s  更新 Codex CLI\n"   "$C_BOLD" "$C_RESET"
   printf "  %s3%s  更新 Pi\n"          "$C_BOLD" "$C_RESET"
-  printf "  %s4%s  更新全部\n"          "$C_BOLD" "$C_RESET"
-  printf "  %s5%s  只更新运行时（Node / npm）\n" "$C_BOLD" "$C_RESET"
+  printf "  %s4%s  更新 CodeBuddy Code\n" "$C_BOLD" "$C_RESET"
+  printf "  %s5%s  更新全部\n"          "$C_BOLD" "$C_RESET"
+  printf "  %s6%s  只更新运行时（Node / npm）\n" "$C_BOLD" "$C_RESET"
   printf "  %sr%s  重新检查/刷新\n"     "$C_DIM"  "$C_RESET"
   if [ "$ACTION" = "menu" ]; then
     printf "  %sq%s  返回菜单\n\n"      "$C_DIM"  "$C_RESET"
   else
     printf "  %sq%s  退出\n\n"         "$C_DIM"  "$C_RESET"
   fi
-  printf "请选择 [1-5/r/q]: "
+  printf "请选择 [1-6/r/q]: "
 }
 
 do_update() {
@@ -879,6 +902,7 @@ do_update() {
     claude) CUR_CLAUDE="$after"; LATEST_CLAUDE="$after" ;;
     codex)  CUR_CODEX="$after";  LATEST_CODEX="$after" ;;
     pi)     CUR_PI="$after";     LATEST_PI="$after" ;;
+    codebuddy) CUR_CODEBUDDY="$after"; LATEST_CODEBUDDY="$after" ;;
   esac
   STATUS_FRESH=1
   if [ "$before" = "$after" ]; then
@@ -894,10 +918,12 @@ run_choice() {
     1) do_update claude || failed=1 ;;
     2) do_update codex  || failed=1 ;;
     3) do_update pi     || failed=1 ;;
-    4)
+    4) do_update codebuddy || failed=1 ;;
+    5)
       do_update claude || failed=1
       do_update codex  || failed=1
       do_update pi     || failed=1
+      do_update codebuddy || failed=1
       ;;
     *) return 2 ;;
   esac
@@ -931,7 +957,7 @@ restore_runtime() {
   return "$rc"
 }
 
-# 只更新便携运行时（Node / npm），不重装三个 CLI
+# 只更新便携运行时（Node / npm），不重装四个 CLI
 update_runtime() {
   set_home_paths
   if [ ! -x "$NODE" ]; then
@@ -1117,8 +1143,8 @@ update_action() {
 
   if [ $# -gt 0 ]; then
     case "$1" in
-      all)      run_choice 4; return ;;
-      1|2|3|4)  run_choice "$1"; return ;;
+      all)      run_choice 5; return ;;
+      1|2|3|4|5) run_choice "$1"; return ;;
       runtime)  update_runtime; return ;;
       check)
         refresh_status
@@ -1127,7 +1153,7 @@ update_action() {
         return 0
         ;;
       *)
-        printf "用法：%s update [1|2|3|4|all|check]\n" "$0" >&2
+        printf "用法：%s update [1-5|all|runtime|check]\n" "$0" >&2
         return 2
         ;;
     esac
@@ -1143,8 +1169,8 @@ update_action() {
     fi
     choice="$(printf '%s' "$choice" | tr -d '[:space:]')"
     case "$choice" in
-      5) update_runtime; refresh_status ;;
-      1|2|3|4)
+      6) update_runtime; refresh_status ;;
+      1|2|3|4|5)
         run_choice "$choice"
         ;;
       r|R)
@@ -1153,7 +1179,7 @@ update_action() {
       q|Q|quit|exit) return 0 ;;
       "") continue ;;
       *)
-        printf "%s无效选择：%s（请输入 1-4、r 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
+        printf "%s无效选择：%s（请输入 1-6、r 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
         sleep 1
         ;;
     esac
@@ -1255,10 +1281,10 @@ rm_path() {
 uninstall_action() {
   local key="${1:-all}"
   case "$key" in
-    all|claude|codex|pi) ;;
-    *) die "未知组件：${key}（可用 all / claude / codex / pi）" ;;
+    all|claude|codex|pi|codebuddy) ;;
+    *) die "未知组件：${key}（可用 all / claude / codex / pi / codebuddy）" ;;
   esac
-  local -a entries=(claude codex pi node npm npx)
+  local -a entries=(claude codex pi codebuddy node npm npx)
   local -a bin_candidates=(/opt/homebrew/bin /usr/local/bin "$HOME/.local/bin")
   local -a found_entries=()
   local -a files=()
@@ -1311,12 +1337,12 @@ uninstall_action() {
   [ "${#found_entries[@]}" -eq 0 ] && printf "  %s（无）%s\n" "$C_DIM" "$C_RESET"
 
   step "将清理的脚本内容"
-  printf "  %s·%s claude / codex / pi 中的 node_modules、package.json、package-lock.json 等\n" "$C_DIM" "$C_RESET"
+  printf "  %s·%s claude / codex / pi / codebuddy 中的 node_modules、package.json、package-lock.json 等\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s .dependencies（Node、npm、缓存、临时目录）\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s 保留 %s 本身及其中其他内容\n" "$C_DIM" "$C_RESET" "$AGENTS_HOME"
 
   step "不会改动的东西"
-  for f in "$HOME/.claude" "$HOME/.codex" "$HOME/.pi"; do
+  for f in "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.codebuddy" "$HOME/.local/share/codebuddy"; do
     [ -e "$f" ] && printf "  %s·%s %s（登录态与配置）\n" "$C_DIM" "$C_RESET" "$f"
   done
   printf "  %s·%s 安装根目录本身，以及其中非本脚本生成的其他文件\n" "$C_DIM" "$C_RESET"
@@ -1328,7 +1354,7 @@ uninstall_action() {
   fi
 
   printf "\n%s此操作不可撤销。%s\n" "$C_RED" "$C_BOLD"
-  printf "  · 清理脚本内容：claude / codex / pi / .dependencies\n"
+  printf "  · 清理脚本内容：claude / codex / pi / codebuddy / .dependencies\n"
   printf "  · 保留目录：%s（及其中其他内容）\n" "$AGENTS_HOME"
   printf "  · 删除入口：%s 个\n" "${#found_entries[@]}"
   if [ "$ASSUME_YES" != "1" ]; then
@@ -1342,7 +1368,8 @@ uninstall_action() {
     for f in README.md agents-green.command \
              claude/package.json claude/package-lock.json \
              codex/package.json codex/package-lock.json \
-             pi/package.json pi/package-lock.json; do
+             pi/package.json pi/package-lock.json \
+             codebuddy/package.json codebuddy/package-lock.json; do
       [ -e "$AGENTS_HOME/$f" ] && files+=("$f")
     done
     if [ "${#files[@]}" -gt 0 ]; then
@@ -1404,8 +1431,8 @@ uninstall_action() {
       fi
     done
 
-    # 三个组件目录：只删本脚本生成的文件，保留用户自己的文件
-    for sub in claude codex pi; do
+    # 四个组件目录：只删本脚本生成的文件，保留用户自己的文件
+    for sub in claude codex pi codebuddy; do
       p="$AGENTS_HOME/$sub"
       [ -d "$p" ] || continue
       if [ -L "$p" ]; then
@@ -1496,7 +1523,7 @@ uninstall_action() {
       leftover=1
     fi
   done
-  [ "$leftover" = "0" ] && ok "三个 AI 与 node/npm/npx 均已从 PATH 消失"
+  [ "$leftover" = "0" ] && ok "四个 AI 与 node/npm/npx 均已从 PATH 消失"
 
   if [ "${#failed_items[@]}" -gt 0 ]; then
     printf "\n%s%s卸载部分完成，以下 %s 项未能删除。%s\n" \
@@ -1538,27 +1565,28 @@ component_menu() {
     printf "  %s1%s  %s Claude Code\n" "$C_BOLD" "$C_RESET" "$title"
     printf "  %s2%s  %s Codex CLI\n"   "$C_BOLD" "$C_RESET" "$title"
     printf "  %s3%s  %s Pi\n"          "$C_BOLD" "$C_RESET" "$title"
-    printf "  %s4%s  %s全部\n"         "$C_BOLD" "$C_RESET" "$title"
+    printf "  %s4%s  %s CodeBuddy Code\n" "$C_BOLD" "$C_RESET" "$title"
+    printf "  %s5%s  %s全部\n"         "$C_BOLD" "$C_RESET" "$title"
     printf "  %sq%s  返回菜单\n\n"     "$C_DIM"  "$C_RESET"
-    printf "请选择 [1-4/q]: "
+    printf "请选择 [1-5/q]: "
     if ! read -r choice; then
       printf "\n"
       exit 0
     fi
     choice="$(printf '%s' "$choice" | tr -d '[:space:]')"
     case "$choice" in
-      1|2|3)
-        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; esac
+      1|2|3|4)
+        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; 4) key=codebuddy ;; esac
         if install_action "$key"; then refresh_after_install "$key"; fi
         FORCE=0; CONFIRMED=0
         menu_pause
         ;;
-      4) if install_action all; then refresh_after_install claude codex pi; fi
+      5) if install_action all; then refresh_after_install claude codex pi codebuddy; fi
          FORCE=0; CONFIRMED=0; menu_pause ;;
       q|Q|quit|exit) return 0 ;;
       "") ;;
       *)
-        printf "%s无效选择：%s（请输入 1-4 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
+        printf "%s无效选择：%s（请输入 1-5 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
         sleep 1
         ;;
     esac
@@ -1580,22 +1608,23 @@ uninstall_menu() {
     printf "  %s1%s  卸载 Claude Code\n" "$C_BOLD" "$C_RESET"
     printf "  %s2%s  卸载 Codex CLI\n"   "$C_BOLD" "$C_RESET"
     printf "  %s3%s  卸载 Pi\n"          "$C_BOLD" "$C_RESET"
-    printf "  %s4%s  卸载全部（清脚本内容 + 全部入口，保留目录）\n" "$C_BOLD" "$C_RESET"
+    printf "  %s4%s  卸载 CodeBuddy Code\n" "$C_BOLD" "$C_RESET"
+    printf "  %s5%s  卸载全部（清脚本内容 + 全部入口，保留目录）\n" "$C_BOLD" "$C_RESET"
     printf "  %sq%s  返回菜单\n\n"       "$C_DIM"  "$C_RESET"
-    printf "请选择 [1-4/q]: "
+    printf "请选择 [1-5/q]: "
     if ! read -r choice; then
       printf "\n"
       exit 0
     fi
     choice="$(printf '%s' "$choice" | tr -d '[:space:]')"
     case "$choice" in
-      1|2|3)
-        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; esac
+      1|2|3|4)
+        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; 4) key=codebuddy ;; esac
         uninstall_action "$key"
         refresh_status
         menu_pause
         ;;
-      4)
+      5)
         uninstall_action all
         [ -d "$AGENTS_HOME" ] || exit 0
         refresh_status
@@ -1604,7 +1633,7 @@ uninstall_menu() {
       q|Q|quit|exit) return 0 ;;
       "") ;;
       *)
-        printf "%s无效选择：%s（请输入 1-4 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
+        printf "%s无效选择：%s（请输入 1-5 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
         sleep 1
         ;;
     esac
@@ -1667,9 +1696,9 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
         case "$arg" in
           --force) FORCE=1 ;;
           --latest) printf "  %s! 默认已装最新版，--latest 不再需要%s\n" "$C_YELLOW" "$C_RESET" ;;
-          all|claude|codex|pi) component="$arg" ;;
+          all|claude|codex|pi|codebuddy) component="$arg" ;;
           -h|--help) usage; exit 0 ;;
-          *) die "未知参数：${arg}（install 可用 --force / all|claude|codex|pi）" ;;
+          *) die "未知参数：${arg}（install 可用 --force / all|claude|codex|pi|codebuddy）" ;;
         esac
       done
       install_action "$component"
@@ -1691,9 +1720,9 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
           --dry-run)   DRY=1 ;;
           --no-backup) DO_BACKUP=0 ;;
           --yes|-y)    ASSUME_YES=1 ;;
-          all|claude|codex|pi) component="$arg" ;;
+          all|claude|codex|pi|codebuddy) component="$arg" ;;
           -h|--help)   usage; exit 0 ;;
-          *) die "未知参数：${arg}（uninstall 可用 --dry-run / --yes / --no-backup / all|claude|codex|pi）" ;;
+          *) die "未知参数：${arg}（uninstall 可用 --dry-run / --yes / --no-backup / all|claude|codex|pi|codebuddy）" ;;
         esac
       done
       uninstall_action "$component"
