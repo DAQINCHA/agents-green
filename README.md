@@ -1,6 +1,6 @@
 # agents-green
 
-`~/.agents` 工具链的唯一入口：在一个自包含目录里装好 **Claude Code / Codex CLI / Pi / CodeBuddy Code** 四个命令行 AI，
+`~/.agents` 工具链的唯一入口：在一个自包含目录里装好 **Claude Code / Codex CLI / Pi / CodeBuddy** 四个命令行 AI，
 连同它们要用的便携 Node 运行时，再把 `claude`、`codex`、`pi`、`codebuddy`（以及 `node`、`npm`、`npx`）暴露成普通命令。
 
 一个 shell 脚本，零第三方依赖，只写 `AGENTS_HOME` 内部和入口目录，不碰系统自带的 node/npm。
@@ -32,7 +32,7 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 ./agents-green.command                                  # 交互菜单
 ./agents-green.command install                          # 装全部（Node + 四个 AI）
 ./agents-green.command install --force claude           # 只覆盖重装 Claude Code
-./agents-green.command install --force codebuddy        # 只覆盖重装 CodeBuddy Code
+./agents-green.command install --force codebuddy        # 只覆盖重装 CodeBuddy
 ./agents-green.command setup                            # 迁移后修复 / 重建命令入口
 ./agents-green.command update                           # 交互式更新菜单
 ./agents-green.command update 1                         # 只更新 Claude Code（1-4 依次为 Claude / Codex / Pi / CodeBuddy）
@@ -78,7 +78,7 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 
 - **只支持 Apple Silicon**：下载的是 `darwin-arm64` 二进制，Intel Mac 会在第一步架构检查时退出。
 - **要联网**：nodejs.org 与 registry.npmjs.org 都要能访问；首次装全部约 950 MB。
-- **CodeBuddy Code 要 Node 18.20 以上**：它本身就是个 Node 程序，全靠目录里的便携 Node 拉起，不需要系统装 Node。它的包比较大（解压后 200 MB 上下），安装包自身没有安装脚本，所以不像 Claude Code 那样需要 `allowScripts`。
+- **CodeBuddy 要 Node 18.20 以上**：它本身就是个 Node 程序，全靠目录里的便携 Node 拉起，不需要系统装 Node。它的包比较大（解压后 200 MB 上下），安装包自身没有安装脚本，所以不像 Claude Code 那样需要 `allowScripts`。
 - 入口目录优先 `/opt/homebrew/bin`，其次 `/usr/local/bin`，最后 `~/.local/bin`。落在 `~/.local/bin` 时 GUI 应用（如 Magpie）通常扫不到，脚本会提示。
 - 首次运行 `claude` / `codex` / `pi` / `codebuddy` 会引导登录。
 

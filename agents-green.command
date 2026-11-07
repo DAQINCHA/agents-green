@@ -561,7 +561,7 @@ _install_action() {
       install_agent claude @anthropic-ai/claude-code "$CLAUDE_VER" "Claude Code" || { bad "Claude Code 安装失败"; return 1; }
       install_agent codex  @openai/codex            "$CODEX_VER"  "Codex CLI"   || { bad "Codex CLI 安装失败"; return 1; }
       install_agent pi     @earendil-works/pi-coding-agent "$PI_VER" "Pi"        || { bad "Pi 安装失败"; return 1; }
-      install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy Code" || { bad "CodeBuddy Code 安装失败"; return 1; }
+      install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy" || { bad "CodeBuddy 安装失败"; return 1; }
       check_list="claude codex pi codebuddy"
     fi
   else
@@ -586,7 +586,7 @@ _install_action() {
           ;;
         codebuddy)
           write_pkg_json codebuddy agents-codebuddy-cli ''
-          install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy Code" || { bad "CodeBuddy Code 安装失败"; return 1; }
+          install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy" || { bad "CodeBuddy 安装失败"; return 1; }
           ;;
       esac
       check_list="$key"
@@ -786,7 +786,7 @@ display_name() {
     claude) printf 'Claude Code' ;;
     codex)  printf 'Codex CLI' ;;
     pi)     printf 'Pi' ;;
-    codebuddy) printf 'CodeBuddy Code' ;;
+    codebuddy) printf 'CodeBuddy' ;;
   esac
 }
 
@@ -850,7 +850,7 @@ print_status() {
   status_line "Claude Code" "$CUR_CLAUDE" "$LATEST_CLAUDE"
   status_line "Codex CLI"   "$CUR_CODEX"  "$LATEST_CODEX"
   status_line "Pi"          "$CUR_PI"     "$LATEST_PI"
-  status_line "CodeBuddy Code" "$CUR_CODEBUDDY" "$LATEST_CODEBUDDY"
+  status_line "CodeBuddy" "$CUR_CODEBUDDY" "$LATEST_CODEBUDDY"
 }
 
 draw_update_menu() {
@@ -863,7 +863,7 @@ draw_update_menu() {
   printf "  %s1%s  更新 Claude Code\n" "$C_BOLD" "$C_RESET"
   printf "  %s2%s  更新 Codex CLI\n"   "$C_BOLD" "$C_RESET"
   printf "  %s3%s  更新 Pi\n"          "$C_BOLD" "$C_RESET"
-  printf "  %s4%s  更新 CodeBuddy Code\n" "$C_BOLD" "$C_RESET"
+  printf "  %s4%s  更新 CodeBuddy\n" "$C_BOLD" "$C_RESET"
   printf "  %s5%s  更新全部\n"          "$C_BOLD" "$C_RESET"
   printf "  %s6%s  只更新运行时（Node / npm）\n" "$C_BOLD" "$C_RESET"
   printf "  %sr%s  重新检查/刷新\n"     "$C_DIM"  "$C_RESET"
@@ -1565,7 +1565,7 @@ component_menu() {
     printf "  %s1%s  %s Claude Code\n" "$C_BOLD" "$C_RESET" "$title"
     printf "  %s2%s  %s Codex CLI\n"   "$C_BOLD" "$C_RESET" "$title"
     printf "  %s3%s  %s Pi\n"          "$C_BOLD" "$C_RESET" "$title"
-    printf "  %s4%s  %s CodeBuddy Code\n" "$C_BOLD" "$C_RESET" "$title"
+    printf "  %s4%s  %s CodeBuddy\n" "$C_BOLD" "$C_RESET" "$title"
     printf "  %s5%s  %s全部\n"         "$C_BOLD" "$C_RESET" "$title"
     printf "  %sq%s  返回菜单\n\n"     "$C_DIM"  "$C_RESET"
     printf "请选择 [1-5/q]: "
@@ -1608,7 +1608,7 @@ uninstall_menu() {
     printf "  %s1%s  卸载 Claude Code\n" "$C_BOLD" "$C_RESET"
     printf "  %s2%s  卸载 Codex CLI\n"   "$C_BOLD" "$C_RESET"
     printf "  %s3%s  卸载 Pi\n"          "$C_BOLD" "$C_RESET"
-    printf "  %s4%s  卸载 CodeBuddy Code\n" "$C_BOLD" "$C_RESET"
+    printf "  %s4%s  卸载 CodeBuddy\n" "$C_BOLD" "$C_RESET"
     printf "  %s5%s  卸载全部（清脚本内容 + 全部入口，保留目录）\n" "$C_BOLD" "$C_RESET"
     printf "  %sq%s  返回菜单\n\n"       "$C_DIM"  "$C_RESET"
     printf "请选择 [1-5/q]: "
