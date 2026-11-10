@@ -197,16 +197,28 @@ is_own_symlink_target() {
   return 1
 }
 
-# 七个入口的唯一模板来源；install 与 setup 共用，避免两份代码漂移
+# 一个组件在入口目录里要暴露的命令名。多数组件只有一个（与目录名同名），
+# 但 CodeBuddy 的包同时声明了 codebuddy / cbc / codebuddy-code / cbc-prewarm / codebuddy-lowmem，
+# 只转发 codebuddy 会让 cbc 这类短名在 PATH 上找不到。
+# 安装、卸载、校验都从这里取，避免各处再写死一份清单。
+entry_names() {
+  case "$1" in
+    codebuddy) printf '%s\n' codebuddy cbc ;;
+    *) printf '%s\n' "$1" ;;
+  esac
+}
+
+# 入口的唯一模板来源；install 与 setup 共用，避免两份代码漂移
 # $1=bin 目录  $2=是否暴露 node/npm/npx（1/0）  $3+=要写入入口的组件（空 = claude codex pi codebuddy 全部）
 # 返回非 0 表示有入口没写成功，调用方必须检查
 write_entries() {
-  local bin="$1" with_node="$2" existing f tgt bak components
+  local bin="$1" with_node="$2" existing f tgt bak components c
   shift 2
   components="${*:-claude codex pi codebuddy}"
 
   # 清场：只删自己写过的入口；外来的一律备份后让位
-  for f in $components; do
+  # 按 entry_names 展开，一个组件可能对应多个入口名（如 CodeBuddy 的 codebuddy / cbc）
+  for f in $(for c in $components; do entry_names "$c"; done); do
     if [ -L "$bin/$f" ]; then
       tgt="$(readlink "$bin/$f" 2>/dev/null || true)"
       if is_own_symlink_target "$bin/$f"; then
@@ -234,9 +246,12 @@ write_entries() {
         printf 'exec "%s" "%s/pi/node_modules/.bin/pi" "$@"\n' "$NODE" "$AGENTS_HOME" \
           | write_shim "$bin/pi" || return 1 ;;
       codebuddy)
-        # 它自带自动更新，会绕过本脚本的更新流程；这里固定关掉，版本统一由「更新」管
-        printf 'export DISABLE_AUTOUPDATER=1\nexec "%s" "%s/codebuddy/node_modules/.bin/codebuddy" "$@"\n' \
-          "$NODE" "$AGENTS_HOME" | write_shim "$bin/codebuddy" || return 1 ;;
+        # 它自带自动更新，会绕过本脚本的更新流程；这里固定关掉，版本统一由「更新」管。
+        # 一个包声明多个命令名，全部指向同一个 bin，且都要带上关自动更新的那行。
+        for f in $(entry_names codebuddy); do
+          printf 'export DISABLE_AUTOUPDATER=1\nexec "%s" "%s/codebuddy/node_modules/.bin/%s" "$@"\n' \
+            "$NODE" "$AGENTS_HOME" "$f" | write_shim "$bin/$f" || return 1
+        done ;;
       *)
         warn "未知组件：$f，跳过" ;;
     esac
@@ -317,6 +332,7 @@ verify_commands() {
         codex)  v="$("$NODE" "$AGENTS_HOME/codex/node_modules/.bin/codex" --version 2>&1)" || rc=$? ;;
         pi)     v="$("$NODE" "$AGENTS_HOME/pi/node_modules/.bin/pi" --version 2>&1)" || rc=$? ;;
         codebuddy) v="$("$NODE" "$AGENTS_HOME/codebuddy/node_modules/.bin/codebuddy" --version 2>&1)" || rc=$? ;;
+        cbc)    v="$("$NODE" "$AGENTS_HOME/codebuddy/node_modules/.bin/cbc" --version 2>&1)" || rc=$? ;;
         *)      continue ;;
       esac
     fi
@@ -562,7 +578,7 @@ _install_action() {
       install_agent codex  @openai/codex            "$CODEX_VER"  "Codex CLI"   || { bad "Codex CLI 安装失败"; return 1; }
       install_agent pi     @earendil-works/pi-coding-agent "$PI_VER" "Pi"        || { bad "Pi 安装失败"; return 1; }
       install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy" || { bad "CodeBuddy 安装失败"; return 1; }
-      check_list="claude codex pi codebuddy"
+      check_list="claude codex pi codebuddy cbc"
     fi
   else
     label="$(display_name "$key")"
@@ -589,7 +605,7 @@ _install_action() {
           install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy" || { bad "CodeBuddy 安装失败"; return 1; }
           ;;
       esac
-      check_list="$key"
+      check_list="$(entry_names "$key" | tr '\n' ' ')"
     fi
   fi
   if [ "$SKIP_LINKS" = "1" ]; then
@@ -1215,7 +1231,7 @@ is_ours_entry() {
 }
 
 uninstall_one() {
-  local key="$1" label dir p tgt d answer leftover
+  local key="$1" label dir p tgt d e answer leftover
   local -a found=()
   local -a bin_candidates=(/opt/homebrew/bin /usr/local/bin "$HOME/.local/bin")
   label="$(display_name "$key")"
@@ -1228,15 +1244,18 @@ uninstall_one() {
   ok "目标：${dir}（$(du -sh "$dir" 2>/dev/null | cut -f1)）"
   for d in ${bin_candidates[@]+"${bin_candidates[@]}"}; do
     [ -d "$d" ] || continue
-    p="$d/$key"
-    if [ -L "$p" ]; then
-      tgt="$(readlink "$p" 2>/dev/null)"
-      if is_ours_entry "$p"; then found+=("$p"); ok "$p → $tgt"
-      else warn "$p 指向别处，跳过"; fi
-    elif [ -f "$p" ]; then
-      if is_ours_entry "$p"; then found+=("$p"); ok "${p}（wrapper）"
-      else warn "$p 不是本方案生成，跳过"; fi
-    fi
+    # 一个组件可能对应多个入口名（如 CodeBuddy 的 codebuddy / cbc），逐个清
+    for e in $(entry_names "$key"); do
+      p="$d/$e"
+      if [ -L "$p" ]; then
+        tgt="$(readlink "$p" 2>/dev/null)"
+        if is_ours_entry "$p"; then found+=("$p"); ok "$p → $tgt"
+        else warn "$p 指向别处，跳过"; fi
+      elif [ -f "$p" ]; then
+        if is_ours_entry "$p"; then found+=("$p"); ok "${p}（wrapper）"
+        else warn "$p 不是本方案生成，跳过"; fi
+      fi
+    done
   done
   [ "${#found[@]}" -eq 0 ] && printf "  %s（无入口）%s\n" "$C_DIM" "$C_RESET"
 
@@ -1284,7 +1303,7 @@ uninstall_action() {
     all|claude|codex|pi|codebuddy) ;;
     *) die "未知组件：${key}（可用 all / claude / codex / pi / codebuddy）" ;;
   esac
-  local -a entries=(claude codex pi codebuddy node npm npx)
+  local -a entries=(claude codex pi codebuddy cbc node npm npx)
   local -a bin_candidates=(/opt/homebrew/bin /usr/local/bin "$HOME/.local/bin")
   local -a found_entries=()
   local -a files=()

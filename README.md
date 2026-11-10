@@ -1,7 +1,7 @@
 # agents-green
 
 `~/.agents` 工具链的唯一入口：在一个自包含目录里装好 **Claude Code / Codex CLI / Pi / CodeBuddy** 四个命令行 AI，
-连同它们要用的便携 Node 运行时，再把 `claude`、`codex`、`pi`、`codebuddy`（以及 `node`、`npm`、`npx`）暴露成普通命令。
+连同它们要用的便携 Node 运行时，再把 `claude`、`codex`、`pi`、`codebuddy`（CodeBuddy 另带短名 `cbc`）、以及 `node`、`npm`、`npx` 暴露成普通命令。
 
 一个 shell 脚本，零第三方依赖，只写 `AGENTS_HOME` 内部和入口目录，不碰系统自带的 node/npm。
 
@@ -57,7 +57,8 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 几个刻意的设计：
 
 - **入口不认人**：`/opt/homebrew/bin` 里已有的同名文件若不是本脚本写的，一律先备份成 `.bak`（已有 `.bak` 就加时间戳），绝不静默覆盖。
-- **CodeBuddy 的自动更新被固定关掉**：它自带自动更新，会绕过这里的版本管理；入口里写死了 `DISABLE_AUTOUPDATER=1`，升版本一律走 `update`。想放开就自己改入口，重跑 `setup` 会再被关掉。
+- **一个包的多个命令名全部转发**：CodeBuddy 的包声明了 `codebuddy`、`cbc`、`codebuddy-code`、`cbc-prewarm`、`codebuddy-lowmem`，这里转发常用的 `codebuddy` 和 `cbc`。清单只在脚本的 `entry_names()` 里写一份，安装、卸载、校验共用，所以卸载不会留下孤儿入口。要加别的短名改那一处即可。
+- **CodeBuddy 的自动更新被固定关掉**：它自带自动更新，会绕过这里的版本管理；入口里写死了 `DISABLE_AUTOUPDATER=1`（`cbc` 入口同样带这行），升版本一律走 `update`。想放开就自己改入口，重跑 `setup` 会再被关掉。
 - **卸载默认先备份**：把 `README.md`、`agents-green.command`、四个 `package.json` / `package-lock.json` 打包到 `AGENTS_HOME/.backups/`；备份失败就停止卸载，不动任何东西。确实不要备份时必须显式写 `--no-backup`。
 - **运行时更新可回滚**：先下载并验证新版本，再一次性替换；任何一步失败都恢复原 Node/npm，备份留在临时目录里不自动删。
 - **卸载只删自己的东西**：`claude/`、`codex/`、`pi/`、`codebuddy/` 目录里只清 `node_modules`、`package.json`、锁文件，你自己放进去的文件会让该目录被保留。
