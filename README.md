@@ -1,7 +1,7 @@
 # agents-green
 
-`~/.agents` 工具链的唯一入口：在一个自包含目录里装好 **Claude Code / Codex CLI / Pi / CodeBuddy / agy（Google Antigravity CLI）** 五个命令行 AI，
-连同要用的便携 Node 运行时（agy 是独立二进制，不需要 Node），再把 `claude`、`codex`、`pi`、`codebuddy`（CodeBuddy 另带短名 `cbc`）、`agy`、以及 `node`、`npm`、`npx` 暴露成普通命令。
+`~/.agents` 工具链的唯一入口：在一个自包含目录里装好 **Claude Code / Codex CLI / agy（Google Antigravity CLI）/ Pi / CodeBuddy** 五个命令行 AI，
+连同要用的便携 Node 运行时（agy 是独立二进制，不需要 Node），再把 `claude`、`codex`、`agy`、`pi`、`codebuddy`（CodeBuddy 另带短名 `cbc`）、以及 `node`、`npm`、`npx` 暴露成普通命令。
 
 一个 shell 脚本，零第三方依赖，只写 `AGENTS_HOME` 内部和入口目录，不碰系统自带的 node/npm。
 
@@ -18,11 +18,11 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 │   └── .npm-cache/             # npm 缓存也锁在这里
 ├── claude/node_modules/.bin/claude
 ├── codex/node_modules/.bin/codex
+├── agy/
+│   ├── agy                     # 独立 Go 二进制（解包后的 antigravity 改名而来）
+│   └── .version                # 安装时记下的版本号，离线也能显示当前版本
 ├── pi/node_modules/.bin/pi
-├── codebuddy/node_modules/.bin/codebuddy
-└── agy/
-    ├── agy                     # 独立 Go 二进制（解包后的 antigravity 改名而来）
-    └── .version                # 安装时记下的版本号，离线也能显示当前版本
+└── codebuddy/node_modules/.bin/codebuddy
 ```
 
 登录态不在这个目录里：`~/.claude`、`~/.codex`、`~/.pi`、`~/.codebuddy`，以及 agy 的系统钥匙串和 `~/.gemini/antigravity-cli`。所以删掉 `~/.agents` 重装，登录状态仍然在。
@@ -35,12 +35,12 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 ./agents-green.command                                  # 交互菜单
 ./agents-green.command install                          # 装全部（Node + 五个 AI）
 ./agents-green.command install --force claude           # 只覆盖重装 Claude Code
-./agents-green.command install --force codebuddy        # 只覆盖重装 CodeBuddy
 ./agents-green.command install --force agy              # 只覆盖重装 agy（Antigravity）
+./agents-green.command install --force codebuddy        # 只覆盖重装 CodeBuddy
 ./agents-green.command setup                            # 迁移后修复 / 重建命令入口
 ./agents-green.command update                           # 交互式更新菜单
-./agents-green.command update 1                         # 只更新 Claude Code（1-5 依次为 Claude / Codex / Pi / CodeBuddy / agy）
-./agents-green.command update 5                         # 只更新 agy
+./agents-green.command update 1                         # 只更新 Claude Code（1-5 依次为 Claude / Codex / agy / Pi / CodeBuddy）
+./agents-green.command update 3                         # 只更新 agy
 ./agents-green.command update all                       # 更新五个 AI
 ./agents-green.command update runtime                   # 只更新 Node / npm（等价 update 7）
 ./agents-green.command update check                     # 只看版本状态，不更新
@@ -55,10 +55,10 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 
 | 动作 | 做什么 |
 |---|---|
-| `install [--force] [all\|claude\|codex\|pi\|codebuddy\|agy]` | 下载便携 Node + npm，装五个 AI，建命令入口，最后在「模拟无 node 的干净环境」里实测每个命令能否运行 |
+| `install [--force] [all\|claude\|codex\|agy\|pi\|codebuddy]` | 下载便携 Node + npm，装五个 AI，建命令入口，最后在「模拟无 node 的干净环境」里实测每个命令能否运行 |
 | `setup` | 不下载任何东西，只检查架构、清 quarantine、按本机实际装了的组件重建入口。用于目录迁移、换机 rsync 之后 |
 | `update [1-7\|all\|check\|runtime]` | 1-5 是五个 AI，6 是全部，7 是运行时（同 `runtime`）；四个 Node CLI 逐个 `npm install @latest`，agy 走 manifest + sha512；`runtime` 单独升 Node/npm，带下载→验证→替换→失败回滚的完整流程 |
-| `uninstall [--dry-run\|--yes\|--no-backup] [all\|claude\|codex\|pi\|codebuddy\|agy]` | 只删脚本自己生成的文件和入口，保留 `AGENTS_HOME` 目录本身及其他内容 |
+| `uninstall [--dry-run\|--yes\|--no-backup] [all\|claude\|codex\|agy\|pi\|codebuddy]` | 只删脚本自己生成的文件和入口，保留 `AGENTS_HOME` 目录本身及其他内容 |
 
 几个刻意的设计：
 
@@ -92,7 +92,7 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 - **agy 的登录态**：在系统钥匙串和 `~/.gemini/antigravity-cli/`，不在 `AGENTS_HOME` 内，卸载不会动它们。
 - **CodeBuddy 要 Node 18.20 以上**：它本身就是个 Node 程序，全靠目录里的便携 Node 拉起，不需要系统装 Node。它的包比较大（解压后 200 MB 上下），安装包自身没有安装脚本，所以不像 Claude Code 那样需要 `allowScripts`。
 - 入口目录优先 `/opt/homebrew/bin`，其次 `/usr/local/bin`，最后 `~/.local/bin`。落在 `~/.local/bin` 时 GUI 应用（如 Magpie）通常扫不到，脚本会提示。
-- 首次运行 `claude` / `codex` / `pi` / `codebuddy` / `agy` 会引导登录。
+- 首次运行 `claude` / `codex` / `agy` / `pi` / `codebuddy` 会引导登录。
 
 ## 本文件在哪
 
