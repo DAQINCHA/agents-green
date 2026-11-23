@@ -65,7 +65,7 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 - **入口不认人**：`/opt/homebrew/bin` 里已有的同名文件若不是本脚本写的，一律先备份成 `.bak`（已有 `.bak` 就加时间戳），绝不静默覆盖。
 - **一个包的多个命令名全部转发**：CodeBuddy 的包声明了 `codebuddy`、`cbc`、`codebuddy-code`、`cbc-prewarm`、`codebuddy-lowmem`，这里转发常用的 `codebuddy` 和 `cbc`。清单只在脚本的 `entry_names()` 里写一份，安装、卸载、校验共用，所以卸载不会留下孤儿入口。要加别的短名改那一处即可。
 - **CodeBuddy 的自动更新被固定关掉**：它自带自动更新，会绕过这里的版本管理；入口里写死了 `DISABLE_AUTOUPDATER=1`（`cbc` 入口同样带这行），升版本一律走 `update`。想放开就自己改入口，重跑 `setup` 会再被关掉。
-- **Antigravity 完全收编**：独立 Go 二进制（约 15 MB，不依赖 Node），入口直接 `exec` 它，不带 Node 路径。下载走 manifest 里**原样**的 `url` 字段（路径是 `darwin-arm`，自己拼成 `darwin-arm64` 会 404），用 `sha512` 校验通过才解包，把里面的 `antigravity` 改名成 `agy`；版本记在 `$AGENTS_HOME/agy/.version`，离线也能显示。它的自动更新也被入口写死 `AGY_CLI_DISABLE_AUTO_UPDATE=true` 关掉，升级统一走 `update`。
+- **Antigravity 完全收编**：独立 Go 二进制（下载约 86 MB，解压后约 220 MB，不依赖 Node），入口直接 `exec` 它，不带 Node 路径。下载走 manifest 里**原样**的 `url` 字段（路径是 `darwin-arm`，自己拼成 `darwin-arm64` 会 404），用 `sha512` 校验通过才解包，把里面的 `antigravity` 改名成 `agy`；版本记在 `$AGENTS_HOME/agy/.version`，离线也能显示。它的自动更新也被入口写死 `AGY_CLI_DISABLE_AUTO_UPDATE=true` 关掉，升级统一走 `update`。
 - **卸载默认先备份**：把 `README.md`、`agents-green.command`、四个 `package.json` / `package-lock.json` 和 `agy/.version` 打包到 `AGENTS_HOME/.backups/`；备份失败就停止卸载，不动任何东西。确实不要备份时必须显式写 `--no-backup`。
 - **运行时更新可回滚**：先下载并验证新版本，再一次性替换；任何一步失败都恢复原 Node/npm，备份留在临时目录里不自动删。
 - **卸载只删自己的东西**：`claude/`、`codex/`、`pi/`、`codebuddy/` 目录里只清 `node_modules`、`package.json`、锁文件；`agy/` 里只清 `agy` 和 `.version`。你自己放进去的文件会让对应目录被保留。
@@ -87,7 +87,7 @@ macOS 上同时用几个 AI CLI 时，常见麻烦是：Node 版本互相打架�
 
 - **只支持 Apple Silicon**：下载的是 `darwin-arm64` 二进制，Intel Mac 会在第一步架构检查时退出。
 - **要联网**：nodejs.org 与 registry.npmjs.org 都要能访问（装另外四个 AI 和运行时）；装 Antigravity 还需要 `storage.googleapis.com` 和 `antigravity-cli-auto-updater-*.run.app` 可达。首次装全部约 1 GB。本机网络里 `antigravity.google` 域名不通，所以**不走**官方 `curl .../install.sh | bash` 这条路线；下载一律用 manifest 返回的 URL 原样地址，并做 `sha512` 校验。
-- **Antigravity 不依赖 Node**：它是个独立 Go 二进制（约 15 MB），不是 npm 包（npm 上的同名包是空壳占位），因此不能 `npm install`；脚本直接 `exec`，不用便携 Node。
+- **Antigravity 不依赖 Node**：它是个独立 Go 二进制（约 220 MB），不是 npm 包（npm 上的同名包是空壳占位），因此不能 `npm install`；脚本直接 `exec`，不用便携 Node。
 - **Antigravity 的版本与更新**：版本以 `$AGENTS_HOME/agy/.version` 为准（离线也能显示），最新版本号从 manifest 解析；升级走「拉 manifest → 下载 → 校验 sha512 → 备份旧二进制 → 替换 → 失败回滚」，不碰 npm。`AGY_VER` 只接受 `latest` 或留空，因为 manifest 只提供最新版。它的自动更新被脚本写死关掉，升级统一用 `update`。
 - **Antigravity 的登录态**：在系统钥匙串和 `~/.gemini/antigravity-cli/`，不在 `AGENTS_HOME` 内，卸载不会动它们。
 - **CodeBuddy 要 Node 18.20 以上**：它本身就是个 Node 程序，全靠目录里的便携 Node 拉起，不需要系统装 Node。它的包比较大（解压后 200 MB 上下），安装包自身没有安装脚本，所以不像 Claude Code 那样需要 `allowScripts`。

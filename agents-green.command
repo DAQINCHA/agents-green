@@ -513,7 +513,7 @@ install_agent_agy() {
   fi
   ok "选定 $new_ver"
   mkdir -p "$TMP/agy-extract" || { bad "无法准备临时目录：$TMP"; return 1; }
-  printf "  %s下载中（约 15 MB）...%s\n" "$C_DIM" "$C_RESET"
+  printf "  %s下载中（约 86 MB，解压后约 220 MB）...%s\n" "$C_DIM" "$C_RESET"
   fetch_file "$new_url" "$TMP/agy.tgz" || { bad "Antigravity 下载失败"; return 1; }
   step "校验 sha512"
   verify_agy_sha "$TMP/agy.tgz" "$new_sha" || { bad "sha512 不匹配，已丢弃下载包，未安装"; return 1; }
@@ -734,7 +734,7 @@ _install_action() {
   verify_commands "$BIN_DIR" "$node_on_path" $check_list || fail=1
 
   cleanup
-  printf "\n%s体积：%s\n" "$C_DIM" "$(du -sh "$AGENTS_HOME" 2>/dev/null | cut -f1)"
+  printf "\n%s工具箱总体积（%s 全部内容，含其他组件与便携 Node）：%s\n" "$C_DIM" "$AGENTS_HOME" "$(du -sh "$AGENTS_HOME" 2>/dev/null | cut -f1)"
   if [ "$fail" -eq 0 ]; then
     printf "%s%s安装完成。%s\n" "$C_GREEN" "$C_BOLD" "$C_RESET"
     printf "\n%s下一步：%s\n" "$C_BOLD" "$C_RESET"
@@ -1084,7 +1084,7 @@ update_agy() {
     bad "无法准备更新临时目录：$TMP"; TMP=""; return 1
   fi
 
-  step "下载 Antigravity ${new_ver}（约 15 MB）"
+  step "下载 Antigravity ${new_ver}（约 86 MB）"
   if ! fetch_file "$new_url" "$TMP/agy.tgz"; then
     bad "下载失败，当前安装未改动"; cleanup; return 1
   fi
