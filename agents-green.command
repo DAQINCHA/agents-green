@@ -3,19 +3,20 @@
 #
 # 动作：
 #   双击运行 / ./agents-green.command                   交互菜单
-#   ./agents-green.command install [--force] [all|claude|codex|pi|codebuddy]   安装（默认全部）
+#   ./agents-green.command install [--force] [all|claude|codex|pi|codebuddy|agy]   安装（默认全部）
 #   ./agents-green.command setup                        迁移后修复 / 重建命令入口
-#   ./agents-green.command update [1-5|all|check|runtime]   版本更新
-#   ./agents-green.command uninstall [--dry-run|--yes|--no-backup] [all|claude|codex|pi|codebuddy]
+#   ./agents-green.command update [1-7|all|check|runtime]   版本更新（1-5 五个组件，6 全部，7 运行时）
+#   ./agents-green.command uninstall [--dry-run|--yes|--no-backup] [all|claude|codex|pi|codebuddy|agy]
 #       卸载全部只清理脚本生成的目录与文件，保留 AGENTS_HOME 本身和其他文件
 #       默认备份写到 AGENTS_HOME/.backups，不再写到 HOME
 #
 # 环境变量：
 #   AGENTS_HOME   安装根目录（默认 ~/.agents；可设为任意可写目录的绝对路径）
 #   NODE_VER / NPM_VER / CLAUDE_VER / CODEX_VER / PI_VER / CODEBUDDY_VER   指定版本，默认自动取最新
+#   AGY_VER       指定 agy 版本；只接受 latest 或留空（manifest 只给最新版，旧版没有可靠下载地址）
 #   SKIP_AGENTS=1 install 只装 Node/npm 运行时
 #   SKIP_LINKS=1  install 不建 /opt/homebrew/bin 入口
-#   NO_NODE_LINK=1 setup 不暴露 node/npm/npx（四个 CLI 仍可用自带 Node）
+#   NO_NODE_LINK=1 setup 不暴露 node/npm/npx（四个 Node CLI 仍可用自带 Node；agy 是独立二进制）
 #   AGENTS_BIN_DIR  指定入口目录（默认自动挑 /opt/homebrew/bin 等，仅测试用）
 #
 # 只写 AGENTS_HOME 内部与入口目录（/opt/homebrew/bin、/usr/local/bin 或 ~/.local/bin），不碰系统 node/npm。
@@ -24,6 +25,10 @@
 set -uo pipefail
 # 变量紧贴中文时必须写 ${var}：bash 3.2 在 C/POSIX locale 下会把中文字节的首字节
 # 并进变量名，导致 $var， 被当成未定义变量（表现为吞字或 unbound variable）。
+
+# agy（Google Antigravity CLI）不是 npm 包，是个独立 Go 二进制；版本与下载地址走官方 manifest。
+# URL 里的路径是 darwin-arm 而不是 darwin-arm64，必须原样用 manifest 返回的 url，自己拼会 404。
+AGY_MANIFEST_URL="https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json"
 
 SELF_DIR="$(cd "$(dirname "$0")" && pwd -P)"
 SELF_FILE="$SELF_DIR/$(basename "$0")"
@@ -96,6 +101,46 @@ fetch_file() {
   else
     curl -fsSL -o "$out" "$url"
   fi
+}
+
+# 读 agy 的 manifest，按 version|url|sha512 输出；失败返回非 0。
+# 用 sed/grep 解析，不引 jq；只提供最新版。
+agy_manifest() {
+  local raw ver url sha
+  raw="$(curl -fsSL --max-time 20 "$AGY_MANIFEST_URL" 2>/dev/null)" || return 1
+  ver="$(printf '%s' "$raw" | sed -n 's/.*"version"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  url="$(printf '%s' "$raw"  | sed -n 's/.*"url"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  sha="$(printf '%s' "$raw"  | sed -n 's/.*"sha512"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+  [ -n "$ver" ] && [ -n "$url" ] && [ -n "$sha" ] || return 1
+  printf '%s|%s|%s' "$ver" "$url" "$sha"
+}
+
+# 状态表用的 agy 最新版本号；离线或查询失败返回空串（和其它组件的降级逻辑一致）
+resolve_agy_ver() {
+  local m
+  m="$(agy_manifest)" || return 1
+  printf '%s' "${m%%|*}"
+}
+
+# 校验已下载的 tar.gz 是否与 manifest 的 sha512 一致；$1=文件 $2=期望值
+verify_agy_sha() {
+  local got
+  command -v shasum >/dev/null || { bad "缺少 shasum，无法校验下载包"; return 1; }
+  got="$(shasum -a 512 "$1" 2>/dev/null | awk '{print tolower($1)}')"
+  [ "$got" = "$(printf '%s' "$2" | tr '[:upper:]' '[:lower:]')" ]
+}
+
+# 解包并定位里面的 antigravity 可执行文件；$1=包 $2=解包目录，成功时把路径打到 stdout
+extract_agy_bin() {
+  local pkg="$1" out="$2" src
+  mkdir -p "$out" 2>/dev/null || return 1
+  tar -xzf "$pkg" -C "$out" 2>/dev/null || return 1
+  src="$(find "$out" -type f -name antigravity 2>/dev/null | head -1)"
+  [ -n "$src" ] || return 1
+  chmod +x "$src" 2>/dev/null || return 1
+  # 不解析 --version 的输出格式，只确认新二进制能跑起来
+  "$src" --version >/dev/null 2>&1 || return 1
+  printf '%s' "$src"
 }
 
 # $1 传空串时解析失败返回空（状态表用它区分"未知"），不传则回落默认版本
@@ -209,12 +254,12 @@ entry_names() {
 }
 
 # 入口的唯一模板来源；install 与 setup 共用，避免两份代码漂移
-# $1=bin 目录  $2=是否暴露 node/npm/npx（1/0）  $3+=要写入入口的组件（空 = claude codex pi codebuddy 全部）
+# $1=bin 目录  $2=是否暴露 node/npm/npx（1/0）  $3+=要写入入口的组件（空 = claude codex pi codebuddy agy 全部）
 # 返回非 0 表示有入口没写成功，调用方必须检查
 write_entries() {
   local bin="$1" with_node="$2" existing f tgt bak components c
   shift 2
-  components="${*:-claude codex pi codebuddy}"
+  components="${*:-claude codex pi codebuddy agy}"
 
   # 清场：只删自己写过的入口；外来的一律备份后让位
   # 按 entry_names 展开，一个组件可能对应多个入口名（如 CodeBuddy 的 codebuddy / cbc）
@@ -252,6 +297,11 @@ write_entries() {
           printf 'export DISABLE_AUTOUPDATER=1\nexec "%s" "%s/codebuddy/node_modules/.bin/%s" "$@"\n' \
             "$NODE" "$AGENTS_HOME" "$f" | write_shim "$bin/$f" || return 1
         done ;;
+      agy)
+        # 独立 Go 二进制，不依赖 Node；直接 exec，别把便携 Node 的路径写进去。
+        # 和 CodeBuddy 一样写死关掉自带自动更新，升版本统一走「更新」。
+        printf 'export AGY_CLI_DISABLE_AUTO_UPDATE=true\nexec "%s/agy/agy" "$@"\n' "$AGENTS_HOME" \
+          | write_shim "$bin/agy" || return 1 ;;
       *)
         warn "未知组件：$f，跳过" ;;
     esac
@@ -259,7 +309,7 @@ write_entries() {
   ok "已写入入口：$components"
 
   if [ "$with_node" != "1" ]; then
-    warn "按调用方要求跳过 node / npm / npx（四个 CLI 仍用自带 Node）"
+    warn "按调用方要求跳过 node / npm / npx（claude/codex/pi/codebuddy 仍用自带 Node，agy 是独立二进制）"
     return 0
   fi
 
@@ -333,6 +383,7 @@ verify_commands() {
         pi)     v="$("$NODE" "$AGENTS_HOME/pi/node_modules/.bin/pi" --version 2>&1)" || rc=$? ;;
         codebuddy) v="$("$NODE" "$AGENTS_HOME/codebuddy/node_modules/.bin/codebuddy" --version 2>&1)" || rc=$? ;;
         cbc)    v="$("$NODE" "$AGENTS_HOME/codebuddy/node_modules/.bin/cbc" --version 2>&1)" || rc=$? ;;
+        agy)    v="$("$AGENTS_HOME/agy/agy" --version 2>&1)" || rc=$? ;;
         *)      continue ;;
       esac
     fi
@@ -356,6 +407,7 @@ refresh_after_install() {
       codex)  CUR_CODEX="$(current_version codex)";   LATEST_CODEX="$CUR_CODEX" ;;
       pi)     CUR_PI="$(current_version pi)";         LATEST_PI="$CUR_PI" ;;
       codebuddy) CUR_CODEBUDDY="$(current_version codebuddy)"; LATEST_CODEBUDDY="$CUR_CODEBUDDY" ;;
+      agy) CUR_AGY="$(current_version agy)"; LATEST_AGY="$CUR_AGY" ;;
     esac
   done
   CUR_NODE="$([ -x "$NODE" ] && "$NODE" -v 2>/dev/null)"
@@ -379,7 +431,10 @@ refresh_status() {
     CUR_CODEX="$(current_version codex)"
     CUR_PI="$(current_version pi)"
     CUR_CODEBUDDY="$(current_version codebuddy)"
+    CUR_AGY="$(current_version agy)"
     LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_PI=""; LATEST_CODEBUDDY=""
+    # agy 查版本不需要 Node，离线/超时则留空，沿用「最新版未知」的降级显示
+    LATEST_AGY="$(resolve_agy_ver 2>/dev/null || true)"
   fi
   CUR_NODE="$([ -x "$NODE" ] && "$NODE" -v 2>/dev/null)"
   CUR_NODE="${CUR_NODE#v}"
@@ -438,6 +493,42 @@ install_agent() {
   ok "$label 完成"
 }
 
+# agy 单装：拉 manifest → 原样用 url 下载 → sha512 校验 → 解包 → 改名放入 → 写 .version。
+# 任何一步失败都只留下临时目录（由 cleanup 统一清），不往 AGENTS_HOME/agy 里写半成品。
+install_agent_agy() {
+  local ver="${1:-latest}"
+  if [ -n "$ver" ] && [ "$ver" != "latest" ]; then
+    bad "AGY_VER 只接受 latest 或留空；manifest 只提供最新版，旧版没有可靠下载地址"
+    return 1
+  fi
+  step "安装 Antigravity（agy）"
+  local manifest new_ver new_url new_sha rest bin_src
+  printf "  %s读取版本清单...%s\n" "$C_DIM" "$C_RESET"
+  manifest="$(agy_manifest)" \
+    || { bad "无法读取 agy 版本清单（检查 ${AGY_MANIFEST_URL} 是否可达）"; return 1; }
+  new_ver="${manifest%%|*}"; rest="${manifest#*|}"
+  new_url="${rest%%|*}"; new_sha="${rest#*|}"
+  if [ -z "$new_ver" ] || [ -z "$new_url" ] || [ -z "$new_sha" ]; then
+    bad "版本清单字段不全，已停止"; return 1
+  fi
+  ok "选定 $new_ver"
+  mkdir -p "$TMP/agy-extract" || { bad "无法准备临时目录：$TMP"; return 1; }
+  printf "  %s下载中（约 15 MB）...%s\n" "$C_DIM" "$C_RESET"
+  fetch_file "$new_url" "$TMP/agy.tgz" || { bad "agy 下载失败"; return 1; }
+  step "校验 sha512"
+  verify_agy_sha "$TMP/agy.tgz" "$new_sha" || { bad "sha512 不匹配，已丢弃下载包，未安装"; return 1; }
+  ok "校验通过"
+  bin_src="$(extract_agy_bin "$TMP/agy.tgz" "$TMP/agy-extract")" \
+    || { bad "agy 解压或验证失败，未安装"; return 1; }
+  cp "$bin_src" "$AGENTS_HOME/agy/agy" 2>/dev/null || { bad "复制 agy 失败"; return 1; }
+  chmod +x "$AGENTS_HOME/agy/agy" 2>/dev/null || { bad "设置 agy 执行权限失败"; return 1; }
+  if ! printf '%s\n' "$new_ver" > "$AGENTS_HOME/agy/.version" 2>/dev/null; then
+    rm -f "$AGENTS_HOME/agy/agy" 2>/dev/null
+    bad "写入版本记录失败，已回滚"; return 1
+  fi
+  ok "Antigravity $new_ver → $AGENTS_HOME/agy/agy"
+}
+
 # 外层包装：负责清理临时目录，并把失败变成返回值而不是退出进程
 install_action() {
   local rc=0
@@ -451,6 +542,7 @@ _install_action() {
   local NODE_VER="${NODE_VER:-}" NPM_VER="${NPM_VER:-}"
   local CLAUDE_VER="${CLAUDE_VER:-latest}" CODEX_VER="${CODEX_VER:-latest}" PI_VER="${PI_VER:-latest}"
   local CODEBUDDY_VER="${CODEBUDDY_VER:-latest}"
+  local AGY_VER="${AGY_VER:-latest}"
   local SKIP_AGENTS="${SKIP_AGENTS:-0}" SKIP_LINKS="${SKIP_LINKS:-0}"
   local BIN_DIR="" fail=0 v check_list="" label
   set_home_paths
@@ -459,8 +551,8 @@ _install_action() {
   export PATH="$(dirname "$NODE"):$PATH"
 
   case "$key" in
-    all|claude|codex|pi|codebuddy) ;;
-    *) bad "未知组件：${key}（可用 all / claude / codex / pi / codebuddy）"; return 1 ;;
+    all|claude|codex|pi|codebuddy|agy) ;;
+    *) bad "未知组件：${key}（可用 all / claude / codex / pi / codebuddy / agy）"; return 1 ;;
   esac
 
   step "检查环境"
@@ -474,10 +566,11 @@ _install_action() {
 
   if [ "$key" = "all" ]; then
     if [ -d "$AGENTS_HOME/claude/node_modules" ] || [ -d "$AGENTS_HOME/codex/node_modules" ] \
-      || [ -d "$AGENTS_HOME/pi/node_modules" ] || [ -d "$AGENTS_HOME/codebuddy/node_modules" ]; then
+      || [ -d "$AGENTS_HOME/pi/node_modules" ] || [ -d "$AGENTS_HOME/codebuddy/node_modules" ] \
+      || [ -x "$AGENTS_HOME/agy/agy" ]; then
       if [ "$FORCE" != "1" ]; then
         if [ "$INTERACTIVE" = "1" ]; then
-          confirm_overwrite "四个 CLI" || return 1
+          confirm_overwrite "五个 CLI" || return 1
           FORCE=1; CONFIRMED=1
         else
           warn "检测到已有安装。如需覆盖请加 --force，或直接 setup 修复入口"
@@ -488,7 +581,14 @@ _install_action() {
     fi
   else
     label="$(display_name "$key")"
-    if [ -d "$AGENTS_HOME/$key/node_modules" ]; then
+    local installed=0
+    # agy 是独立二进制，没有 node_modules，按自己的文件判断
+    if [ "$key" = "agy" ]; then
+      if [ -x "$AGENTS_HOME/agy/agy" ] || [ -f "$AGENTS_HOME/agy/.version" ]; then installed=1; fi
+    else
+      [ -d "$AGENTS_HOME/$key/node_modules" ] && installed=1
+    fi
+    if [ "$installed" = "1" ]; then
       if [ "$FORCE" != "1" ]; then
         if [ "$INTERACTIVE" = "1" ]; then
           local desc="$label" cur_ver
@@ -514,7 +614,7 @@ _install_action() {
 
   step "创建目录结构"
   if [ "$key" = "all" ]; then
-    mkdir -p "$AGENTS_HOME"/{claude,codex,pi,codebuddy}
+    mkdir -p "$AGENTS_HOME"/{claude,codex,pi,codebuddy,agy}
   else
     mkdir -p "$AGENTS_HOME/$key"
   fi
@@ -522,7 +622,7 @@ _install_action() {
   mkdir -p "$AGENTS_HOME/.dependencies/.npm-cache"
   TMP="$AGENTS_HOME/.install-tmp"
   rm -rf "$TMP"; mkdir -p "$TMP"
-  ok "$AGENTS_HOME/{claude,codex,pi,codebuddy,.dependencies}"
+  ok "$AGENTS_HOME/{claude,codex,pi,codebuddy,agy,.dependencies}"
 
   local refresh_runtime=0
   # 菜单里确认覆盖不重下运行时；只有命令行显式 --force all 才刷新 Node/npm
@@ -566,9 +666,9 @@ _install_action() {
 
   if [ "$key" = "all" ]; then
     if [ "$SKIP_AGENTS" = "1" ]; then
-      step "跳过四个 AI（SKIP_AGENTS=1）"
+      step "跳过五个 AI（SKIP_AGENTS=1）"
     else
-      step "安装四个 AI（下载约 950 MB，请耐心等待）"
+      step "安装五个 AI（下载约 1 GB，请耐心等待）"
       # allowScripts 必须写：claude 的原生二进制靠 postinstall 下载
       write_pkg_json claude agents-claude-code '{ "@anthropic-ai/claude-code": true }'
       write_pkg_json codex  agents-codex-cli  ''
@@ -578,7 +678,8 @@ _install_action() {
       install_agent codex  @openai/codex            "$CODEX_VER"  "Codex CLI"   || { bad "Codex CLI 安装失败"; return 1; }
       install_agent pi     @earendil-works/pi-coding-agent "$PI_VER" "Pi"        || { bad "Pi 安装失败"; return 1; }
       install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy" || { bad "CodeBuddy 安装失败"; return 1; }
-      check_list="claude codex pi codebuddy cbc"
+      install_agent_agy "$AGY_VER" || { bad "agy 安装失败"; return 1; }
+      check_list="claude codex pi codebuddy cbc agy"
     fi
   else
     label="$(display_name "$key")"
@@ -603,6 +704,9 @@ _install_action() {
         codebuddy)
           write_pkg_json codebuddy agents-codebuddy-cli ''
           install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy" || { bad "CodeBuddy 安装失败"; return 1; }
+          ;;
+        agy)
+          install_agent_agy "$AGY_VER" || { bad "agy 安装失败"; return 1; }
           ;;
       esac
       check_list="$(entry_names "$key" | tr '\n' ' ')"
@@ -634,8 +738,8 @@ _install_action() {
   if [ "$fail" -eq 0 ]; then
     printf "%s%s安装完成。%s\n" "$C_GREEN" "$C_BOLD" "$C_RESET"
     printf "\n%s下一步：%s\n" "$C_BOLD" "$C_RESET"
-    printf "  · 新开终端跑 claude / codex / pi / codebuddy（首次会引导登录）\n"
-    printf "  · 登录态存在 ~/.claude、~/.codex、~/.pi、~/.codebuddy，不在 %s 内\n" "$AGENTS_HOME"
+    printf "  · 新开终端跑 claude / codex / pi / codebuddy / agy（首次会引导登录）\n"
+    printf "  · 登录态存在 ~/.claude、~/.codex、~/.pi、~/.codebuddy、~/.gemini/antigravity-cli，不在 %s 内\n" "$AGENTS_HOME"
     if [ "$ACTION" = "menu" ]; then
       printf "  · 更新版本选「2 更新」，修入口选「4 设置环境」\n"
     else
@@ -667,8 +771,15 @@ check_arch() {
 
   local present=0 c
   PRESENT_COMPONENTS=""
-  for c in claude codex pi codebuddy; do
-    if [ -d "$AGENTS_HOME/$c/node_modules" ]; then
+  for c in claude codex pi codebuddy agy; do
+    local ok_comp=0
+    # agy 是独立二进制，没有 node_modules，按自己的文件判断
+    if [ "$c" = "agy" ]; then
+      if [ -x "$AGENTS_HOME/agy/agy" ] || [ -f "$AGENTS_HOME/agy/.version" ]; then ok_comp=1; fi
+    else
+      [ -d "$AGENTS_HOME/$c/node_modules" ] && ok_comp=1
+    fi
+    if [ "$ok_comp" = "1" ]; then
       present=$((present + 1))
       PRESENT_COMPONENTS="${PRESENT_COMPONENTS} ${c}"
     else
@@ -677,10 +788,10 @@ check_arch() {
   done
   PRESENT_COMPONENTS="${PRESENT_COMPONENTS# }"
   if [ "$present" -eq 0 ]; then
-    bad "claude / codex / pi / codebuddy 一个都没装，无法继续"
+    bad "claude / codex / pi / codebuddy / agy 一个都没装，无法继续"
     return 1
   fi
-  ok "已安装 ${present}/4 个组件"
+  ok "已安装 ${present}/5 个组件"
   return 0
 }
 
@@ -704,7 +815,7 @@ clear_quarantine() {
 # 判定目录像不像本方案的安装根
 looks_like_agents_home() {
   [ -d "$1/.dependencies/node/bin" ] || [ -d "$1/claude" ] \
-    || [ -d "$1/codex" ] || [ -d "$1/pi" ]
+    || [ -d "$1/codex" ] || [ -d "$1/pi" ] || [ -d "$1/agy" ]
 }
 
 # 未显式指定 AGENTS_HOME 时按顺序探测；找不到就失败，绝不猜
@@ -759,8 +870,8 @@ setup_action() {
   if [ "$bin_dir" = "$HOME/.local/bin" ]; then
     warn "该目录通常不被 Magpie 等 GUI 应用扫描"
     warn "若已装 Homebrew 或愿意用 sudo，改放系统目录更稳："
-    printf "     sudo mkdir -p /usr/local/bin && sudo cp %s/claude %s/codex %s/pi %s/codebuddy /usr/local/bin/\n" \
-      "$bin_dir" "$bin_dir" "$bin_dir" "$bin_dir"
+    printf "     sudo mkdir -p /usr/local/bin && sudo cp %s/claude %s/codex %s/pi %s/codebuddy %s/agy /usr/local/bin/\n" \
+      "$bin_dir" "$bin_dir" "$bin_dir" "$bin_dir" "$bin_dir"
   fi
 
   printf "\n"
@@ -773,7 +884,7 @@ setup_action() {
 
   printf "\n%s下一步：%s\n" "$C_BOLD" "$C_RESET"
   printf "  1. 新开终端窗口，敲 %s 即可\n" "$PRESENT_COMPONENTS"
-  printf "  2. 首次运行会引导登录，登录态存在 ~/.claude、~/.codex、~/.pi、~/.codebuddy（不在本目录内）\n"
+  printf "  2. 首次运行会引导登录，登录态存在 ~/.claude、~/.codex、~/.pi、~/.codebuddy、~/.gemini/antigravity-cli（不在本目录内）\n"
   printf "  3. 若用 Magpie，退出并重开一次，Agents 面板才会重新扫描\n"
   printf "  4. 更新版本：菜单选「2 更新」，或运行 ./agents-green.command update\n"
   return "$vfail"
@@ -784,8 +895,8 @@ PKG_CLAUDE="@anthropic-ai/claude-code"
 PKG_CODEX="@openai/codex"
 PKG_PI="@earendil-works/pi-coding-agent"
 PKG_CODEBUDDY="@tencent-ai/codebuddy-code"
-CUR_CLAUDE=""; CUR_CODEX=""; CUR_PI=""; CUR_CODEBUDDY=""
-LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_PI=""; LATEST_CODEBUDDY=""
+CUR_CLAUDE=""; CUR_CODEX=""; CUR_PI=""; CUR_CODEBUDDY=""; CUR_AGY=""
+LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_PI=""; LATEST_CODEBUDDY=""; LATEST_AGY=""
 CUR_NODE=""; CUR_NPM=""; LATEST_NODE=""; LATEST_NPM=""
 
 pkg_of() {
@@ -803,6 +914,7 @@ display_name() {
     codex)  printf 'Codex CLI' ;;
     pi)     printf 'Pi' ;;
     codebuddy) printf 'CodeBuddy' ;;
+    agy)    printf 'Antigravity' ;;
   esac
 }
 
@@ -813,6 +925,8 @@ current_version() {
     codex)  [ -x "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 | sed 's/^codex-cli //' ;;
     pi)     [ -f "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 ;;
     codebuddy) [ -f "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 ;;
+    # agy 的版本以安装时写入的 .version 为准，离线也能显示，不解析 --version 的输出格式
+    agy) [ -f "$AGENTS_HOME/agy/.version" ] && head -1 "$AGENTS_HOME/agy/.version" ;;
   esac
 }
 
@@ -828,15 +942,19 @@ check_all() {
   CUR_CODEX="$(current_version codex)"
   CUR_PI="$(current_version pi)"
   CUR_CODEBUDDY="$(current_version codebuddy)"
+  CUR_AGY="$(current_version agy)"
   ( fetch_latest claude > "$td/c" 2>/dev/null ) &
   ( fetch_latest codex  > "$td/x" 2>/dev/null ) &
   ( fetch_latest pi     > "$td/p" 2>/dev/null ) &
   ( fetch_latest codebuddy > "$td/b" 2>/dev/null ) &
+  # agy 走 manifest，不依赖 npm；和上面几路并列查
+  ( resolve_agy_ver > "$td/a" 2>/dev/null ) &
   wait
   LATEST_CLAUDE="$(head -1 "$td/c" 2>/dev/null)"
   LATEST_CODEX="$(head -1 "$td/x" 2>/dev/null)"
   LATEST_PI="$(head -1 "$td/p" 2>/dev/null)"
   LATEST_CODEBUDDY="$(head -1 "$td/b" 2>/dev/null)"
+  LATEST_AGY="$(head -1 "$td/a" 2>/dev/null)"
   rm -rf "$td"
 }
 
@@ -867,6 +985,7 @@ print_status() {
   status_line "Codex CLI"   "$CUR_CODEX"  "$LATEST_CODEX"
   status_line "Pi"          "$CUR_PI"     "$LATEST_PI"
   status_line "CodeBuddy" "$CUR_CODEBUDDY" "$LATEST_CODEBUDDY"
+  status_line "Antigravity" "$CUR_AGY" "$LATEST_AGY"
 }
 
 draw_update_menu() {
@@ -880,19 +999,23 @@ draw_update_menu() {
   printf "  %s2%s  更新 Codex CLI\n"   "$C_BOLD" "$C_RESET"
   printf "  %s3%s  更新 Pi\n"          "$C_BOLD" "$C_RESET"
   printf "  %s4%s  更新 CodeBuddy\n" "$C_BOLD" "$C_RESET"
-  printf "  %s5%s  更新全部\n"          "$C_BOLD" "$C_RESET"
-  printf "  %s6%s  只更新运行时（Node / npm）\n" "$C_BOLD" "$C_RESET"
+  printf "  %s5%s  更新 agy（Antigravity）\n" "$C_BOLD" "$C_RESET"
+  printf "  %s6%s  更新全部\n"          "$C_BOLD" "$C_RESET"
+  printf "  %s7%s  只更新运行时（Node / npm）\n" "$C_BOLD" "$C_RESET"
   printf "  %sr%s  重新检查/刷新\n"     "$C_DIM"  "$C_RESET"
   if [ "$ACTION" = "menu" ]; then
     printf "  %sq%s  返回菜单\n\n"      "$C_DIM"  "$C_RESET"
   else
     printf "  %sq%s  退出\n\n"         "$C_DIM"  "$C_RESET"
   fi
-  printf "请选择 [1-6/r/q]: "
+  printf "请选择 [1-7/r/q]: "
 }
 
 do_update() {
-  local key="$1" dir pkg label before after rc
+  local key="$1"
+  # agy 不是 npm 包，不能走 npm install @latest，单独处理
+  if [ "$key" = "agy" ]; then update_agy; return $?; fi
+  local dir pkg label before after rc
   dir="$AGENTS_HOME/$key"; pkg="$(pkg_of "$key")"; label="$(display_name "$key")"
   printf "\n%s→ 更新 %s%s\n" "$C_CYAN" "$label" "$C_RESET"
 
@@ -928,6 +1051,92 @@ do_update() {
   fi
 }
 
+# agy 更新：manifest 取最新版 → 原样用 url 下载 → sha512 校验 → 解包验证 →
+# 备份旧二进制 → 一次性替换 → 失败恢复，思路和运行时更新一致。全程不碰 npm，也不动登录态。
+update_agy() {
+  local dir="$AGENTS_HOME/agy" bin="$AGENTS_HOME/agy/agy" label="Antigravity"
+  local before manifest new_ver new_url new_sha rest bin_src old_backup
+  local apply_ok=0 fail_reason=""
+  printf "\n%s→ 更新 %s%s\n" "$C_CYAN" "$label" "$C_RESET"
+  if [ ! -f "$bin" ] && [ ! -f "$dir/.version" ]; then
+    printf "  %s✗ 未安装：找不到 %s%s\n" "$C_RED" "$dir" "$C_RESET"
+    return 1
+  fi
+  before="$(current_version agy)"
+  printf "  %s当前：%s%s\n" "$C_DIM" "${before:-未知}" "$C_RESET"
+
+  step "查询最新版本"
+  manifest="$(agy_manifest)" || { bad "无法读取 agy 版本清单，本次未更新"; return 1; }
+  new_ver="${manifest%%|*}"; rest="${manifest#*|}"
+  new_url="${rest%%|*}"; new_sha="${rest#*|}"
+  if [ -z "$new_ver" ] || [ -z "$new_url" ] || [ -z "$new_sha" ]; then
+    bad "版本清单字段不全，本次未更新"; return 1
+  fi
+  ok "最新 $new_ver"
+  if [ "$before" = "$new_ver" ] && [ -x "$bin" ]; then
+    printf "\n%s✓ 已是最新：%s%s\n" "$C_GREEN" "$new_ver" "$C_RESET"
+    CUR_AGY="$new_ver"; LATEST_AGY="$new_ver"; STATUS_FRESH=1
+    return 0
+  fi
+
+  TMP="$AGENTS_HOME/.update-tmp"
+  if ! rm -rf "$TMP" 2>/dev/null || ! mkdir -p "$TMP/agy-extract" 2>/dev/null; then
+    bad "无法准备更新临时目录：$TMP"; TMP=""; return 1
+  fi
+
+  step "下载 agy ${new_ver}（约 15 MB）"
+  if ! fetch_file "$new_url" "$TMP/agy.tgz"; then
+    bad "下载失败，当前安装未改动"; cleanup; return 1
+  fi
+  step "校验 sha512"
+  if ! verify_agy_sha "$TMP/agy.tgz" "$new_sha"; then
+    bad "sha512 不匹配，已丢弃下载包，当前安装未改动"; cleanup; return 1
+  fi
+  ok "校验通过"
+  bin_src="$(extract_agy_bin "$TMP/agy.tgz" "$TMP/agy-extract")" \
+    || { bad "解压或验证失败，当前安装未改动"; cleanup; return 1; }
+
+  # 先留一份回滚副本，再一次性替换；替换过程的任何一步失败都恢复旧的
+  old_backup="$TMP/agy.old"
+  if [ -f "$bin" ] && ! cp -p "$bin" "$old_backup" 2>/dev/null; then
+    bad "无法备份当前 agy，更新已停止"; cleanup; return 1
+  fi
+  step "替换二进制"
+  while true; do
+    rm -f "$bin.new" 2>/dev/null
+    cp "$bin_src" "$bin.new" 2>/dev/null || { fail_reason="复制新二进制失败"; break; }
+    chmod +x "$bin.new" 2>/dev/null || { fail_reason="设置权限失败"; break; }
+    mv -f "$bin.new" "$bin" 2>/dev/null || { fail_reason="替换二进制失败"; break; }
+    apply_ok=1
+    break
+  done
+
+  if [ "$apply_ok" != "1" ]; then
+    bad "${fail_reason}，开始恢复原 agy"
+    rm -f "$bin.new" 2>/dev/null
+    if [ -f "$old_backup" ] && cp -p "$old_backup" "$bin" 2>/dev/null \
+         && chmod +x "$bin" 2>/dev/null; then
+      ok "原 agy 已恢复"
+      cleanup
+    else
+      bad "自动恢复未完成，备份保留在 $TMP"
+      TMP=""   # 禁止 EXIT 清理删掉最后的回滚副本
+    fi
+    return 1
+  fi
+
+  if ! printf '%s\n' "$new_ver" > "$dir/.version" 2>/dev/null; then
+    warn "二进制已替换，但版本记录写入失败：$dir/.version"
+  fi
+  CUR_AGY="$new_ver"; LATEST_AGY="$new_ver"; STATUS_FRESH=1
+  if [ "$before" = "$new_ver" ]; then
+    printf "  %s✓ 已是最新：%s%s\n" "$C_GREEN" "$new_ver" "$C_RESET"
+  else
+    printf "  %s✓ 已更新：%s → %s%s\n" "$C_GREEN" "${before:-未知}" "$new_ver" "$C_RESET"
+  fi
+  cleanup
+}
+
 run_choice() {
   local failed=0
   case "$1" in
@@ -935,11 +1144,13 @@ run_choice() {
     2) do_update codex  || failed=1 ;;
     3) do_update pi     || failed=1 ;;
     4) do_update codebuddy || failed=1 ;;
-    5)
+    5) do_update agy    || failed=1 ;;
+    6)
       do_update claude || failed=1
       do_update codex  || failed=1
       do_update pi     || failed=1
       do_update codebuddy || failed=1
+      do_update agy    || failed=1
       ;;
     *) return 2 ;;
   esac
@@ -973,7 +1184,7 @@ restore_runtime() {
   return "$rc"
 }
 
-# 只更新便携运行时（Node / npm），不重装四个 CLI
+# 只更新便携运行时（Node / npm），不重装五个 CLI
 update_runtime() {
   set_home_paths
   if [ ! -x "$NODE" ]; then
@@ -1159,9 +1370,9 @@ update_action() {
 
   if [ $# -gt 0 ]; then
     case "$1" in
-      all)      run_choice 5; return ;;
-      1|2|3|4|5) run_choice "$1"; return ;;
-      runtime)  update_runtime; return ;;
+      all)      run_choice 6; return ;;
+      1|2|3|4|5|6) run_choice "$1"; return ;;
+      7|runtime) update_runtime; return ;;
       check)
         refresh_status
         printf "\n"
@@ -1169,7 +1380,7 @@ update_action() {
         return 0
         ;;
       *)
-        printf "用法：%s update [1-5|all|runtime|check]\n" "$0" >&2
+        printf "用法：%s update [1-7|all|runtime|check]\n" "$0" >&2
         return 2
         ;;
     esac
@@ -1185,8 +1396,8 @@ update_action() {
     fi
     choice="$(printf '%s' "$choice" | tr -d '[:space:]')"
     case "$choice" in
-      6) update_runtime; refresh_status ;;
-      1|2|3|4|5)
+      7) update_runtime; refresh_status ;;
+      1|2|3|4|5|6)
         run_choice "$choice"
         ;;
       r|R)
@@ -1195,7 +1406,7 @@ update_action() {
       q|Q|quit|exit) return 0 ;;
       "") continue ;;
       *)
-        printf "%s无效选择：%s（请输入 1-6、r 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
+        printf "%s无效选择：%s（请输入 1-7、r 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
         sleep 1
         ;;
     esac
@@ -1231,7 +1442,7 @@ is_ours_entry() {
 }
 
 uninstall_one() {
-  local key="$1" label dir p tgt d e answer leftover
+  local key="$1" label dir p tgt d e answer leftover clean_fail
   local -a found=()
   local -a bin_candidates=(/opt/homebrew/bin /usr/local/bin "$HOME/.local/bin")
   label="$(display_name "$key")"
@@ -1265,7 +1476,11 @@ uninstall_one() {
   fi
 
   printf "\n%s此操作不可撤销。%s\n" "$C_RED" "$C_BOLD"
-  printf "  · 删除目录：%s\n" "$dir"
+  if [ "$key" = "agy" ]; then
+    printf "  · 删除文件：%s/agy、%s/.version（目录里有其他内容则保留目录）\n" "$dir" "$dir"
+  else
+    printf "  · 删除目录：%s\n" "$dir"
+  fi
   printf "  · 删除入口：%s 个\n" "${#found[@]}"
   printf "  %s单个卸载不做备份，需要时用「安装」重新安装即可。%s\n" "$C_DIM" "$C_RESET"
   if [ "$ASSUME_YES" != "1" ]; then
@@ -1277,11 +1492,33 @@ uninstall_one() {
   for p in ${found[@]+"${found[@]}"}; do
     if rm -f "$p" 2>/dev/null; then ok "已删除 $p"; else bad "删除失败：${p}（可能需要 sudo）"; fi
   done
-  if rm -rf "$dir" 2>/dev/null; then
-    ok "已删除 $dir"
+  if [ "$key" = "agy" ]; then
+    # 只删脚本自己写的两个文件；目录里还有用户自己的东西就保留目录
+    clean_fail=0
+    for f in agy .version; do
+      p="$dir/$f"
+      [ -e "$p" ] || [ -L "$p" ] || continue
+      if rm -f "$p" 2>/dev/null; then :; else bad "删除失败：$p"; clean_fail=1; fi
+    done
+    if [ "$clean_fail" = "0" ] && rmdir "$dir" 2>/dev/null; then
+      ok "已删除 $dir"
+    elif [ -n "$(ls -A "$dir" 2>/dev/null)" ]; then
+      if [ "$clean_fail" = "1" ]; then
+        warn "部分内容未能删除，目录保留：$dir"
+      else
+        warn "保留 ${dir}（里面还有非本脚本的内容）"
+      fi
+    else
+      bad "目录未能删除：$dir"
+      return 1
+    fi
   else
-    bad "删除失败：$dir"
-    return 1
+    if rm -rf "$dir" 2>/dev/null; then
+      ok "已删除 $dir"
+    else
+      bad "删除失败：$dir"
+      return 1
+    fi
   fi
   leftover="$(command -v "$key" 2>/dev/null || true)"
   if [ -n "$leftover" ]; then
@@ -1300,10 +1537,10 @@ rm_path() {
 uninstall_action() {
   local key="${1:-all}"
   case "$key" in
-    all|claude|codex|pi|codebuddy) ;;
-    *) die "未知组件：${key}（可用 all / claude / codex / pi / codebuddy）" ;;
+    all|claude|codex|pi|codebuddy|agy) ;;
+    *) die "未知组件：${key}（可用 all / claude / codex / pi / codebuddy / agy）" ;;
   esac
-  local -a entries=(claude codex pi codebuddy cbc node npm npx)
+  local -a entries=(claude codex pi codebuddy cbc agy node npm npx)
   local -a bin_candidates=(/opt/homebrew/bin /usr/local/bin "$HOME/.local/bin")
   local -a found_entries=()
   local -a files=()
@@ -1357,13 +1594,16 @@ uninstall_action() {
 
   step "将清理的脚本内容"
   printf "  %s·%s claude / codex / pi / codebuddy 中的 node_modules、package.json、package-lock.json 等\n" "$C_DIM" "$C_RESET"
+  printf "  %s·%s agy 中的 agy 二进制、.version（其余文件保留）\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s .dependencies（Node、npm、缓存、临时目录）\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s 保留 %s 本身及其中其他内容\n" "$C_DIM" "$C_RESET" "$AGENTS_HOME"
 
   step "不会改动的东西"
-  for f in "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.codebuddy" "$HOME/.local/share/codebuddy"; do
+  for f in "$HOME/.claude" "$HOME/.codex" "$HOME/.pi" "$HOME/.codebuddy" "$HOME/.local/share/codebuddy" \
+           "$HOME/.gemini/antigravity-cli"; do
     [ -e "$f" ] && printf "  %s·%s %s（登录态与配置）\n" "$C_DIM" "$C_RESET" "$f"
   done
+  printf "  %s·%s 系统钥匙串（agy 登录态）\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s 安装根目录本身，以及其中非本脚本生成的其他文件\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s 其他 Homebrew 文件、系统 node/npm\n" "$C_DIM" "$C_RESET"
 
@@ -1373,7 +1613,7 @@ uninstall_action() {
   fi
 
   printf "\n%s此操作不可撤销。%s\n" "$C_RED" "$C_BOLD"
-  printf "  · 清理脚本内容：claude / codex / pi / codebuddy / .dependencies\n"
+  printf "  · 清理脚本内容：claude / codex / pi / codebuddy / agy / .dependencies\n"
   printf "  · 保留目录：%s（及其中其他内容）\n" "$AGENTS_HOME"
   printf "  · 删除入口：%s 个\n" "${#found_entries[@]}"
   if [ "$ASSUME_YES" != "1" ]; then
@@ -1388,7 +1628,8 @@ uninstall_action() {
              claude/package.json claude/package-lock.json \
              codex/package.json codex/package-lock.json \
              pi/package.json pi/package-lock.json \
-             codebuddy/package.json codebuddy/package-lock.json; do
+             codebuddy/package.json codebuddy/package-lock.json \
+             agy/.version; do
       [ -e "$AGENTS_HOME/$f" ] && files+=("$f")
     done
     if [ "${#files[@]}" -gt 0 ]; then
@@ -1450,7 +1691,7 @@ uninstall_action() {
       fi
     done
 
-    # 四个组件目录：只删本脚本生成的文件，保留用户自己的文件
+    # 四个 npm 组件目录：只删本脚本生成的文件，保留用户自己的文件
     for sub in claude codex pi codebuddy; do
       p="$AGENTS_HOME/$sub"
       [ -d "$p" ] || continue
@@ -1482,6 +1723,30 @@ uninstall_action() {
         failed_items+=("$p")
       fi
     done
+
+    # agy 目录：只删本脚本写的二进制和版本记录，保留用户自己放的东西
+    p="$AGENTS_HOME/agy"
+    if [ -L "$p" ]; then
+      warn "跳过软链目录：${p}（请手动确认）"
+    elif [ -d "$p" ]; then
+      clean_fail=0
+      for f in agy .version; do
+        [ -e "$p/$f" ] || [ -L "$p/$f" ] || continue
+        if rm_path "$p/$f"; then :; else bad "删除失败：$p/$f"; failed_items+=("$p/$f"); clean_fail=1; fi
+      done
+      if [ "$clean_fail" = "0" ] && rmdir "$p" 2>/dev/null; then
+        ok "已删除 $p"
+      elif [ -n "$(ls -A "$p" 2>/dev/null)" ]; then
+        if [ "$clean_fail" = "1" ]; then
+          warn "部分内容未能删除，目录保留：$p"
+        else
+          warn "保留 ${p}（里面还有非本脚本的内容）"
+        fi
+      else
+        bad "目录未能删除：$p"
+        failed_items+=("$p")
+      fi
+    fi
 
     # .dependencies：只删本脚本生成的内容
     p="$AGENTS_HOME/.dependencies"
@@ -1542,7 +1807,7 @@ uninstall_action() {
       leftover=1
     fi
   done
-  [ "$leftover" = "0" ] && ok "四个 AI 与 node/npm/npx 均已从 PATH 消失"
+  [ "$leftover" = "0" ] && ok "五个 AI 与 node/npm/npx 均已从 PATH 消失"
 
   if [ "${#failed_items[@]}" -gt 0 ]; then
     printf "\n%s%s卸载部分完成，以下 %s 项未能删除。%s\n" \
@@ -1585,27 +1850,28 @@ component_menu() {
     printf "  %s2%s  %s Codex CLI\n"   "$C_BOLD" "$C_RESET" "$title"
     printf "  %s3%s  %s Pi\n"          "$C_BOLD" "$C_RESET" "$title"
     printf "  %s4%s  %s CodeBuddy\n" "$C_BOLD" "$C_RESET" "$title"
-    printf "  %s5%s  %s全部\n"         "$C_BOLD" "$C_RESET" "$title"
+    printf "  %s5%s  %s agy（Antigravity）\n" "$C_BOLD" "$C_RESET" "$title"
+    printf "  %s6%s  %s全部\n"         "$C_BOLD" "$C_RESET" "$title"
     printf "  %sq%s  返回菜单\n\n"     "$C_DIM"  "$C_RESET"
-    printf "请选择 [1-5/q]: "
+    printf "请选择 [1-6/q]: "
     if ! read -r choice; then
       printf "\n"
       exit 0
     fi
     choice="$(printf '%s' "$choice" | tr -d '[:space:]')"
     case "$choice" in
-      1|2|3|4)
-        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; 4) key=codebuddy ;; esac
+      1|2|3|4|5)
+        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; 4) key=codebuddy ;; 5) key=agy ;; esac
         if install_action "$key"; then refresh_after_install "$key"; fi
         FORCE=0; CONFIRMED=0
         menu_pause
         ;;
-      5) if install_action all; then refresh_after_install claude codex pi codebuddy; fi
+      6) if install_action all; then refresh_after_install claude codex pi codebuddy agy; fi
          FORCE=0; CONFIRMED=0; menu_pause ;;
       q|Q|quit|exit) return 0 ;;
       "") ;;
       *)
-        printf "%s无效选择：%s（请输入 1-5 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
+        printf "%s无效选择：%s（请输入 1-6 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
         sleep 1
         ;;
     esac
@@ -1628,22 +1894,23 @@ uninstall_menu() {
     printf "  %s2%s  卸载 Codex CLI\n"   "$C_BOLD" "$C_RESET"
     printf "  %s3%s  卸载 Pi\n"          "$C_BOLD" "$C_RESET"
     printf "  %s4%s  卸载 CodeBuddy\n" "$C_BOLD" "$C_RESET"
-    printf "  %s5%s  卸载全部（清脚本内容 + 全部入口，保留目录）\n" "$C_BOLD" "$C_RESET"
+    printf "  %s5%s  卸载 agy（Antigravity）\n" "$C_BOLD" "$C_RESET"
+    printf "  %s6%s  卸载全部（清脚本内容 + 全部入口，保留目录）\n" "$C_BOLD" "$C_RESET"
     printf "  %sq%s  返回菜单\n\n"       "$C_DIM"  "$C_RESET"
-    printf "请选择 [1-5/q]: "
+    printf "请选择 [1-6/q]: "
     if ! read -r choice; then
       printf "\n"
       exit 0
     fi
     choice="$(printf '%s' "$choice" | tr -d '[:space:]')"
     case "$choice" in
-      1|2|3|4)
-        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; 4) key=codebuddy ;; esac
+      1|2|3|4|5)
+        case "$choice" in 1) key=claude ;; 2) key=codex ;; 3) key=pi ;; 4) key=codebuddy ;; 5) key=agy ;; esac
         uninstall_action "$key"
         refresh_status
         menu_pause
         ;;
-      5)
+      6)
         uninstall_action all
         [ -d "$AGENTS_HOME" ] || exit 0
         refresh_status
@@ -1652,7 +1919,7 @@ uninstall_menu() {
       q|Q|quit|exit) return 0 ;;
       "") ;;
       *)
-        printf "%s无效选择：%s（请输入 1-5 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
+        printf "%s无效选择：%s（请输入 1-6 或 q）%s\n" "$C_YELLOW" "$choice" "$C_RESET"
         sleep 1
         ;;
     esac
@@ -1715,9 +1982,9 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
         case "$arg" in
           --force) FORCE=1 ;;
           --latest) printf "  %s! 默认已装最新版，--latest 不再需要%s\n" "$C_YELLOW" "$C_RESET" ;;
-          all|claude|codex|pi|codebuddy) component="$arg" ;;
+          all|claude|codex|pi|codebuddy|agy) component="$arg" ;;
           -h|--help) usage; exit 0 ;;
-          *) die "未知参数：${arg}（install 可用 --force / all|claude|codex|pi|codebuddy）" ;;
+          *) die "未知参数：${arg}（install 可用 --force / all|claude|codex|pi|codebuddy|agy）" ;;
         esac
       done
       install_action "$component"
@@ -1739,9 +2006,9 @@ if [ "${BASH_SOURCE[0]:-$0}" = "$0" ]; then
           --dry-run)   DRY=1 ;;
           --no-backup) DO_BACKUP=0 ;;
           --yes|-y)    ASSUME_YES=1 ;;
-          all|claude|codex|pi|codebuddy) component="$arg" ;;
+          all|claude|codex|pi|codebuddy|agy) component="$arg" ;;
           -h|--help)   usage; exit 0 ;;
-          *) die "未知参数：${arg}（uninstall 可用 --dry-run / --yes / --no-backup / all|claude|codex|pi|codebuddy）" ;;
+          *) die "未知参数：${arg}（uninstall 可用 --dry-run / --yes / --no-backup / all|claude|codex|pi|codebuddy|agy）" ;;
         esac
       done
       uninstall_action "$component"
