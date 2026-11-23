@@ -13,10 +13,10 @@
 # 环境变量：
 #   AGENTS_HOME   安装根目录（默认 ~/.agents；可设为任意可写目录的绝对路径）
 #   NODE_VER / NPM_VER / CLAUDE_VER / CODEX_VER / PI_VER / CODEBUDDY_VER   指定版本，默认自动取最新
-#   AGY_VER       指定 agy 版本；只接受 latest 或留空（manifest 只给最新版，旧版没有可靠下载地址）
+#   AGY_VER       指定 Antigravity 版本；只接受 latest 或留空（manifest 只给最新版，旧版没有可靠下载地址）
 #   SKIP_AGENTS=1 install 只装 Node/npm 运行时
 #   SKIP_LINKS=1  install 不建 /opt/homebrew/bin 入口
-#   NO_NODE_LINK=1 setup 不暴露 node/npm/npx（四个 Node CLI 仍可用自带 Node；agy 是独立二进制）
+#   NO_NODE_LINK=1 setup 不暴露 node/npm/npx（四个 Node CLI 仍可用自带 Node；Antigravity 是独立二进制）
 #   AGENTS_BIN_DIR  指定入口目录（默认自动挑 /opt/homebrew/bin 等，仅测试用）
 #
 # 只写 AGENTS_HOME 内部与入口目录（/opt/homebrew/bin、/usr/local/bin 或 ~/.local/bin），不碰系统 node/npm。
@@ -26,7 +26,7 @@ set -uo pipefail
 # 变量紧贴中文时必须写 ${var}：bash 3.2 在 C/POSIX locale 下会把中文字节的首字节
 # 并进变量名，导致 $var， 被当成未定义变量（表现为吞字或 unbound variable）。
 
-# agy（Google Antigravity CLI）不是 npm 包，是个独立 Go 二进制；版本与下载地址走官方 manifest。
+# Antigravity 不是 npm 包，是个独立 Go 二进制；版本与下载地址走官方 manifest。
 # URL 里的路径是 darwin-arm 而不是 darwin-arm64，必须原样用 manifest 返回的 url，自己拼会 404。
 AGY_MANIFEST_URL="https://antigravity-cli-auto-updater-974169037036.us-central1.run.app/manifests/darwin_arm64.json"
 
@@ -103,7 +103,7 @@ fetch_file() {
   fi
 }
 
-# 读 agy 的 manifest，按 version|url|sha512 输出；失败返回非 0。
+# 读 Antigravity 的 manifest，按 version|url|sha512 输出；失败返回非 0。
 # 用 sed/grep 解析，不引 jq；只提供最新版。
 agy_manifest() {
   local raw ver url sha
@@ -115,7 +115,7 @@ agy_manifest() {
   printf '%s|%s|%s' "$ver" "$url" "$sha"
 }
 
-# 状态表用的 agy 最新版本号；离线或查询失败返回空串（和其它组件的降级逻辑一致）
+# 状态表用的 Antigravity 最新版本号；离线或查询失败返回空串（和其它组件的降级逻辑一致）
 resolve_agy_ver() {
   local m
   m="$(agy_manifest)" || return 1
@@ -309,7 +309,7 @@ write_entries() {
   ok "已写入入口：$components"
 
   if [ "$with_node" != "1" ]; then
-    warn "按调用方要求跳过 node / npm / npx（claude/codex/pi/codebuddy 仍用自带 Node，agy 是独立二进制）"
+    warn "按调用方要求跳过 node / npm / npx（claude/codex/pi/codebuddy 仍用自带 Node，Antigravity 是独立二进制）"
     return 0
   fi
 
@@ -433,7 +433,7 @@ refresh_status() {
     CUR_PI="$(current_version pi)"
     CUR_CODEBUDDY="$(current_version codebuddy)"
     LATEST_CLAUDE=""; LATEST_CODEX=""; LATEST_AGY=""; LATEST_PI=""; LATEST_CODEBUDDY=""
-    # agy 查版本不需要 Node，离线/超时则留空，沿用「最新版未知」的降级显示
+    # Antigravity 查版本不需要 Node，离线/超时则留空，沿用「最新版未知」的降级显示
     LATEST_AGY="$(resolve_agy_ver 2>/dev/null || true)"
   fi
   CUR_NODE="$([ -x "$NODE" ] && "$NODE" -v 2>/dev/null)"
@@ -493,7 +493,7 @@ install_agent() {
   ok "$label 完成"
 }
 
-# agy 单装：拉 manifest → 原样用 url 下载 → sha512 校验 → 解包 → 改名放入 → 写 .version。
+# Antigravity 单装：拉 manifest → 原样用 url 下载 → sha512 校验 → 解包 → 改名放入 → 写 .version。
 # 任何一步失败都只留下临时目录（由 cleanup 统一清），不往 AGENTS_HOME/agy 里写半成品。
 install_agent_agy() {
   local ver="${1:-latest}"
@@ -501,11 +501,11 @@ install_agent_agy() {
     bad "AGY_VER 只接受 latest 或留空；manifest 只提供最新版，旧版没有可靠下载地址"
     return 1
   fi
-  step "安装 Antigravity（agy）"
+  step "安装 Antigravity"
   local manifest new_ver new_url new_sha rest bin_src
   printf "  %s读取版本清单...%s\n" "$C_DIM" "$C_RESET"
   manifest="$(agy_manifest)" \
-    || { bad "无法读取 agy 版本清单（检查 ${AGY_MANIFEST_URL} 是否可达）"; return 1; }
+    || { bad "无法读取 Antigravity 版本清单（检查 ${AGY_MANIFEST_URL} 是否可达）"; return 1; }
   new_ver="${manifest%%|*}"; rest="${manifest#*|}"
   new_url="${rest%%|*}"; new_sha="${rest#*|}"
   if [ -z "$new_ver" ] || [ -z "$new_url" ] || [ -z "$new_sha" ]; then
@@ -514,14 +514,14 @@ install_agent_agy() {
   ok "选定 $new_ver"
   mkdir -p "$TMP/agy-extract" || { bad "无法准备临时目录：$TMP"; return 1; }
   printf "  %s下载中（约 15 MB）...%s\n" "$C_DIM" "$C_RESET"
-  fetch_file "$new_url" "$TMP/agy.tgz" || { bad "agy 下载失败"; return 1; }
+  fetch_file "$new_url" "$TMP/agy.tgz" || { bad "Antigravity 下载失败"; return 1; }
   step "校验 sha512"
   verify_agy_sha "$TMP/agy.tgz" "$new_sha" || { bad "sha512 不匹配，已丢弃下载包，未安装"; return 1; }
   ok "校验通过"
   bin_src="$(extract_agy_bin "$TMP/agy.tgz" "$TMP/agy-extract")" \
-    || { bad "agy 解压或验证失败，未安装"; return 1; }
-  cp "$bin_src" "$AGENTS_HOME/agy/agy" 2>/dev/null || { bad "复制 agy 失败"; return 1; }
-  chmod +x "$AGENTS_HOME/agy/agy" 2>/dev/null || { bad "设置 agy 执行权限失败"; return 1; }
+    || { bad "Antigravity 解压或验证失败，未安装"; return 1; }
+  cp "$bin_src" "$AGENTS_HOME/agy/agy" 2>/dev/null || { bad "复制 Antigravity 失败"; return 1; }
+  chmod +x "$AGENTS_HOME/agy/agy" 2>/dev/null || { bad "设置 Antigravity 执行权限失败"; return 1; }
   if ! printf '%s\n' "$new_ver" > "$AGENTS_HOME/agy/.version" 2>/dev/null; then
     rm -f "$AGENTS_HOME/agy/agy" 2>/dev/null
     bad "写入版本记录失败，已回滚"; return 1
@@ -582,7 +582,7 @@ _install_action() {
   else
     label="$(display_name "$key")"
     local installed=0
-    # agy 是独立二进制，没有 node_modules，按自己的文件判断
+    # Antigravity 是独立二进制，没有 node_modules，按自己的文件判断
     if [ "$key" = "agy" ]; then
       if [ -x "$AGENTS_HOME/agy/agy" ] || [ -f "$AGENTS_HOME/agy/.version" ]; then installed=1; fi
     else
@@ -676,7 +676,7 @@ _install_action() {
       write_pkg_json codebuddy agents-codebuddy-cli ''
       install_agent claude @anthropic-ai/claude-code "$CLAUDE_VER" "Claude Code" || { bad "Claude Code 安装失败"; return 1; }
       install_agent codex  @openai/codex            "$CODEX_VER"  "Codex CLI"   || { bad "Codex CLI 安装失败"; return 1; }
-      install_agent_agy "$AGY_VER" || { bad "agy 安装失败"; return 1; }
+      install_agent_agy "$AGY_VER" || { bad "Antigravity 安装失败"; return 1; }
       install_agent pi     @earendil-works/pi-coding-agent "$PI_VER" "Pi"        || { bad "Pi 安装失败"; return 1; }
       install_agent codebuddy @tencent-ai/codebuddy-code "$CODEBUDDY_VER" "CodeBuddy" || { bad "CodeBuddy 安装失败"; return 1; }
       check_list="claude codex agy pi codebuddy cbc"
@@ -698,7 +698,7 @@ _install_action() {
           install_agent codex @openai/codex "$CODEX_VER" "Codex CLI" || { bad "Codex CLI 安装失败"; return 1; }
           ;;
         agy)
-          install_agent_agy "$AGY_VER" || { bad "agy 安装失败"; return 1; }
+          install_agent_agy "$AGY_VER" || { bad "Antigravity 安装失败"; return 1; }
           ;;
         pi)
           write_pkg_json pi agents-pi '{ "koffi": true, "protobufjs": true, "@google/genai": true }'
@@ -773,7 +773,7 @@ check_arch() {
   PRESENT_COMPONENTS=""
   for c in claude codex agy pi codebuddy; do
     local ok_comp=0
-    # agy 是独立二进制，没有 node_modules，按自己的文件判断
+    # Antigravity 是独立二进制，没有 node_modules，按自己的文件判断
     if [ "$c" = "agy" ]; then
       if [ -x "$AGENTS_HOME/agy/agy" ] || [ -f "$AGENTS_HOME/agy/.version" ]; then ok_comp=1; fi
     else
@@ -923,7 +923,7 @@ current_version() {
   case "$1" in
     claude) [ -x "$dir" ] && "$dir" --version 2>/dev/null | head -1 | sed 's/ (Claude Code)$//' ;;
     codex)  [ -x "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 | sed 's/^codex-cli //' ;;
-    # agy 的版本以安装时写入的 .version 为准，离线也能显示，不解析 --version 的输出格式
+    # Antigravity 的版本以安装时写入的 .version 为准，离线也能显示，不解析 --version 的输出格式
     agy) [ -f "$AGENTS_HOME/agy/.version" ] && head -1 "$AGENTS_HOME/agy/.version" ;;
     pi)     [ -f "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 ;;
     codebuddy) [ -f "$dir" ] && "$NODE" "$dir" --version 2>/dev/null | head -1 ;;
@@ -945,7 +945,7 @@ check_all() {
   CUR_CODEBUDDY="$(current_version codebuddy)"
   ( fetch_latest claude > "$td/c" 2>/dev/null ) &
   ( fetch_latest codex  > "$td/x" 2>/dev/null ) &
-  # agy 走 manifest，不依赖 npm；和上面几路并列查
+  # Antigravity 走 manifest，不依赖 npm；和上面几路并列查
   ( resolve_agy_ver > "$td/a" 2>/dev/null ) &
   ( fetch_latest pi     > "$td/p" 2>/dev/null ) &
   ( fetch_latest codebuddy > "$td/b" 2>/dev/null ) &
@@ -997,7 +997,7 @@ draw_update_menu() {
   printf "\n"
   printf "  %s1%s  更新 Claude Code\n" "$C_BOLD" "$C_RESET"
   printf "  %s2%s  更新 Codex CLI\n"   "$C_BOLD" "$C_RESET"
-  printf "  %s3%s  更新 agy（Antigravity）\n" "$C_BOLD" "$C_RESET"
+  printf "  %s3%s  更新 Antigravity\n" "$C_BOLD" "$C_RESET"
   printf "  %s4%s  更新 Pi\n"          "$C_BOLD" "$C_RESET"
   printf "  %s5%s  更新 CodeBuddy\n" "$C_BOLD" "$C_RESET"
   printf "  %s6%s  更新全部\n"          "$C_BOLD" "$C_RESET"
@@ -1013,7 +1013,7 @@ draw_update_menu() {
 
 do_update() {
   local key="$1"
-  # agy 不是 npm 包，不能走 npm install @latest，单独处理
+  # Antigravity 不是 npm 包，不能走 npm install @latest，单独处理
   if [ "$key" = "agy" ]; then update_agy; return $?; fi
   local dir pkg label before after rc
   dir="$AGENTS_HOME/$key"; pkg="$(pkg_of "$key")"; label="$(display_name "$key")"
@@ -1051,7 +1051,7 @@ do_update() {
   fi
 }
 
-# agy 更新：manifest 取最新版 → 原样用 url 下载 → sha512 校验 → 解包验证 →
+# Antigravity 更新：manifest 取最新版 → 原样用 url 下载 → sha512 校验 → 解包验证 →
 # 备份旧二进制 → 一次性替换 → 失败恢复，思路和运行时更新一致。全程不碰 npm，也不动登录态。
 update_agy() {
   local dir="$AGENTS_HOME/agy" bin="$AGENTS_HOME/agy/agy" label="Antigravity"
@@ -1066,7 +1066,7 @@ update_agy() {
   printf "  %s当前：%s%s\n" "$C_DIM" "${before:-未知}" "$C_RESET"
 
   step "查询最新版本"
-  manifest="$(agy_manifest)" || { bad "无法读取 agy 版本清单，本次未更新"; return 1; }
+  manifest="$(agy_manifest)" || { bad "无法读取 Antigravity 版本清单，本次未更新"; return 1; }
   new_ver="${manifest%%|*}"; rest="${manifest#*|}"
   new_url="${rest%%|*}"; new_sha="${rest#*|}"
   if [ -z "$new_ver" ] || [ -z "$new_url" ] || [ -z "$new_sha" ]; then
@@ -1084,7 +1084,7 @@ update_agy() {
     bad "无法准备更新临时目录：$TMP"; TMP=""; return 1
   fi
 
-  step "下载 agy ${new_ver}（约 15 MB）"
+  step "下载 Antigravity ${new_ver}（约 15 MB）"
   if ! fetch_file "$new_url" "$TMP/agy.tgz"; then
     bad "下载失败，当前安装未改动"; cleanup; return 1
   fi
@@ -1099,7 +1099,7 @@ update_agy() {
   # 先留一份回滚副本，再一次性替换；替换过程的任何一步失败都恢复旧的
   old_backup="$TMP/agy.old"
   if [ -f "$bin" ] && ! cp -p "$bin" "$old_backup" 2>/dev/null; then
-    bad "无法备份当前 agy，更新已停止"; cleanup; return 1
+    bad "无法备份当前 Antigravity，更新已停止"; cleanup; return 1
   fi
   step "替换二进制"
   while true; do
@@ -1112,11 +1112,11 @@ update_agy() {
   done
 
   if [ "$apply_ok" != "1" ]; then
-    bad "${fail_reason}，开始恢复原 agy"
+    bad "${fail_reason}，开始恢复原 Antigravity"
     rm -f "$bin.new" 2>/dev/null
     if [ -f "$old_backup" ] && cp -p "$old_backup" "$bin" 2>/dev/null \
          && chmod +x "$bin" 2>/dev/null; then
-      ok "原 agy 已恢复"
+      ok "原 Antigravity 已恢复"
       cleanup
     else
       bad "自动恢复未完成，备份保留在 $TMP"
@@ -1603,7 +1603,7 @@ uninstall_action() {
            "$HOME/.gemini/antigravity-cli"; do
     [ -e "$f" ] && printf "  %s·%s %s（登录态与配置）\n" "$C_DIM" "$C_RESET" "$f"
   done
-  printf "  %s·%s 系统钥匙串（agy 登录态）\n" "$C_DIM" "$C_RESET"
+  printf "  %s·%s 系统钥匙串（Antigravity 登录态）\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s 安装根目录本身，以及其中非本脚本生成的其他文件\n" "$C_DIM" "$C_RESET"
   printf "  %s·%s 其他 Homebrew 文件、系统 node/npm\n" "$C_DIM" "$C_RESET"
 
@@ -1848,7 +1848,7 @@ component_menu() {
     printf "\n"
     printf "  %s1%s  %s Claude Code\n" "$C_BOLD" "$C_RESET" "$title"
     printf "  %s2%s  %s Codex CLI\n"   "$C_BOLD" "$C_RESET" "$title"
-    printf "  %s3%s  %s agy（Antigravity）\n" "$C_BOLD" "$C_RESET" "$title"
+    printf "  %s3%s  %s Antigravity\n" "$C_BOLD" "$C_RESET" "$title"
     printf "  %s4%s  %s Pi\n"          "$C_BOLD" "$C_RESET" "$title"
     printf "  %s5%s  %s CodeBuddy\n" "$C_BOLD" "$C_RESET" "$title"
     printf "  %s6%s  %s全部\n"         "$C_BOLD" "$C_RESET" "$title"
@@ -1892,7 +1892,7 @@ uninstall_menu() {
     printf "\n"
     printf "  %s1%s  卸载 Claude Code\n" "$C_BOLD" "$C_RESET"
     printf "  %s2%s  卸载 Codex CLI\n"   "$C_BOLD" "$C_RESET"
-    printf "  %s3%s  卸载 agy（Antigravity）\n" "$C_BOLD" "$C_RESET"
+    printf "  %s3%s  卸载 Antigravity\n" "$C_BOLD" "$C_RESET"
     printf "  %s4%s  卸载 Pi\n"          "$C_BOLD" "$C_RESET"
     printf "  %s5%s  卸载 CodeBuddy\n" "$C_BOLD" "$C_RESET"
     printf "  %s6%s  卸载全部（清脚本内容 + 全部入口，保留目录）\n" "$C_BOLD" "$C_RESET"
